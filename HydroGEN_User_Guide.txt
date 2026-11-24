@@ -1,0 +1,1232 @@
+===============================================================================
+ HydroGEN - User Guide and Parameter Reference
+ Bond-valence and hydrogen-bond analysis of crystal structures (CIF)
+===============================================================================
+
+CONTENTS
+  1. What HydroGEN does
+  2. Files and starting the program
+  3. Quick start
+  4. The tabs, one by one
+  5. How the analysis works
+  6. Parameter reference (every setting)
+  7. Bond-valence parameter file (bv_params.txt)
+  8. Output files
+  9. Tips, limitations and troubleshooting
+
+
+-------------------------------------------------------------------------------
+1. WHAT HYDROGEN DOES
+-------------------------------------------------------------------------------
+HydroGEN reads a crystal structure from a CIF and
+
+  * calculates bond-valence (BV) sums for every site, with oxidation states
+    taken from the best BV fit (the formula only breaks near-ties);
+  * classifies every O atom (water, hydroxyl, H-bond acceptor ...) from its
+    BV sum without H;
+  * keeps H atoms already located in the CIF, and proposes positions for the
+    missing ones (hypothetical H);
+  * builds and ranks complete hydrogen-bonding schemes for the whole
+    structure by how well they balance the bond valences, with penalties for
+    unrealistic geometry and short H...H contacts;
+  * optionally refines a scheme by rotating its water molecules;
+  * produces a bond-valence table in the layout used in new-mineral
+    descriptions, and writes a new CIF with the hypothetical H atoms.
+
+
+-------------------------------------------------------------------------------
+2. FILES AND STARTING THE PROGRAM
+-------------------------------------------------------------------------------
+  HydroGEN.exe          the program (double-click). No Python needed.
+  bv_params.txt         bond-valence parameters. A copy is built into the
+                        .exe; if a bv_params.txt sits in the same folder as
+                        the .exe, that file is used instead (so you can edit it).
+  hbond_gui.py          window (source code)
+  hbond_core.py         calculations (source code)
+  build_exe.ps1         rebuilds HydroGEN.exe after the code is changed:
+                          powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+  HydroGEN.ico / .png   program icon (window and .exe); drawn by make_icon.py
+  build-env\, build\    build tools / temporary build files (not needed to run)
+
+  From source (Anaconda Python):   python hbond_gui.py
+
+
+-------------------------------------------------------------------------------
+3. QUICK START
+-------------------------------------------------------------------------------
+  1. Browse...  -> choose one or more CIF files. Every data block becomes an
+     entry in the "Structure" list.
+  2. Run analysis.
+  3. Bond valence tab: check the BV sums, oxidation states, D/A classes and the
+     H-per-cell check in the notes. Right-click a class to change it if needed.
+  4. Schemes tab: browse the ranked hydrogen-bonding schemes (arrow keys).
+     The lower table shows the BV sums of the selected scheme two ways.
+  5. Optional - Refinement tab: refine the selected scheme, compare it with
+     other schemes and with the H already in the CIF ("Score H in CIF").
+  6. H-bond details tab: D-H...A geometry table (D-H, D...A, H...A, angle,
+     apt_sym, Occ.); BV table tab: the publication-style BV table. Both:
+     Save .txt / .csv or Copy.
+  7. Finalize & CIF tab: tick the H atoms to keep, then
+     "Export hypothetical CIF". The file is written next to the original as
+     <name>_hypothetical.cif, then <name>_hypothetical1.cif, 2, ... (never
+     overwritten).
+  8. Finalize & CIF tab > "SHELXL (.res / DFIX)...": SHELXL lines for the ticked
+     hypothetical H, or a complete <name>_HydroGEN.ins (+ .hkl) built from the
+     .res embedded in the CIF (or a .res you load) to refine them.
+
+  The SETTINGS bar above "Run analysis" folds the whole settings table away;
+  click it to open or hide it (remembered between sessions).
+
+  MENUS
+    File > Open CIF(s)...             same as Browse... (Ctrl+O)
+    File > Open analysis... / Save analysis (Ctrl+S) / Save analysis as...
+        An analysis file (*.hgen) stores the CIF file(s) - path AND full text, so it
+        still opens if the CIF is moved - all inputs, hand-set classes, H-bond roles,
+        bond overrides, the Finalize selection and the Refinement comparison entries,
+        AND the complete results as they were: every structure that was analysed in
+        the session (also optimized structures and opened subschemes) with its
+        schemes, selected scheme, Refinement comparison (refined entries included),
+        Finalize selection and Subschemes list. Opening it shows all of this again
+        without searching - press Run analysis only to recalculate. (Files saved by
+        older versions, or whose stored results cannot be read, are re-run as
+        before.) The stored results contain only HydroGEN's own data, never code.
+        Switching between structures in the Structure box also keeps each one's
+        results: going back to a structure shows its earlier analysis.
+    File > Load inputs... / Save inputs...
+        A plain .txt file with one "key = value" per line (with comments). Use it as
+        a slate of custom inputs; keys missing from the file keep their value.
+    File > Restore default inputs     every setting, checkbox and selector back to
+                                      its default (overrides are kept).
+    File > Clear manual overrides     removes hand-set classes, roles and bond
+                                      overrides.
+    Preferences > Light mode / Dark mode   (remembered between sessions)
+    Help > Open user manual (F1)           opens this file in the default text
+                                           viewer; Help > About.
+
+  Tabs, left to right: Bond valence, Environment, Disorder, Schemes,
+  Refinement, Located H-bonds, Inferred H-bonds, H-bond details, BV table,
+  Finalize & CIF (described in section 4 in this order).
+
+  Checkboxes next to "Run analysis":
+    Show impossible configurations   include options/schemes that are
+                                     physically impossible (see 5.6). Off by
+                                     default - they are removed before the
+                                     search, which also makes it much faster.
+    Ignore located H                 treat the H atoms in the CIF as absent and
+                                     predict every H. Use with "Score H in CIF"
+                                     to compare the prediction with the
+                                     determined H positions. A CIF exported in
+                                     this mode has the original H removed.
+    Disordered water/OH             what to do with disordered water/hydroxyl
+                                     (see 5.8): "donors" (default), "acceptors
+                                     only" or "excluded".
+    Re-evaluate without hard-fail   enabled when a run reports hard fails (donors
+      donors                        for which no viable H placement exists); makes
+                                     them acceptor-only and runs again.
+  "Hide settings" folds away the settings panel to give the tables more room.
+
+  BUILD SCHEME... (button next to Export CSV) - make a scheme by hand
+    If no analysis has been run yet (or changes are pending), only the first
+    step runs: bond valence, D/A classes, roles, H-bond candidates (Bond
+    valence, Inferred and Located H-bond tabs are filled; no scheme search).
+    The window lists every donor with missing H (class, located H) and one
+    menu per missing H. Each menu lists the candidate acceptors in
+    ALPHABETICAL order with D...A, symmetry code and a number: the change in
+    total score that choosing this acceptor makes to the scheme as it is now
+    (green = better, grey = about the same, orange = worse, red = much worse).
+    The positions are placed as in the search (one H on the D-A line, two at
+    the H-D-H angle, 3-4 on a tetrahedron, around located H). After every
+    choice the total score, its terms, the H...H / cone flag line and the BV
+    sums (lower table) are recomputed.
+      Hard fails - acceptors that fail the angle tests or give an impossible
+      H...H / H...cation contact - are hidden (the menu says how many); tick
+      "Show hard-fail acceptors" to list them (marked ✖). If every acceptor of
+      a menu is a hard fail, they are all shown with a note.
+    Buttons: Load selected scheme (after a full analysis: start from the
+    scheme selected on the Schemes tab), Clear all, Add to Refinement
+    comparison ("Custom scheme n": score, BV table, compare), Finalize ▶ (load
+    it into Finalize for CIF / SHELXL output), Export CIF... (directly).
+    Classes and roles are changed on the Bond valence tab (right-click); then
+    reopen the builder. Split H and partial-hydroxyl fractions are not chosen
+    here (a partial hydroxyl's H uses its current x).
+  Changing a setting has no effect until you press "Run analysis" again.
+  The same holds for hand-made changes - classes, H-bond roles, bond
+  overrides, "Reset all roles", "Clear manual overrides": they are shown as
+  "→ ... (pending)" in the tables and counted on the button ("Run analysis (3
+  changes pending)"), so several can be made and applied with ONE
+  recalculation. Applying them keeps your Finalize selection where possible.
+  The main actions (Run analysis, Refine, Export hypothetical CIF) are the blue
+  buttons.
+
+
+-------------------------------------------------------------------------------
+4. THE TABS
+-------------------------------------------------------------------------------
+BOND VALENCE
+  One row per site: role (cation/anion), valence, occupancy, BVS, BVS w/o H
+  (sum without bonds to H atoms), BVS - |V|, number of bonds summed, bonds
+  listed but not summed, D/A class (donor / acceptor class, from the sum
+  without H), and how the oxidation state was chosen.
+  * Click a site       -> its bonds below (distance, s, neighbour occupancy,
+                          s x occ, status, symmetry operator, parameters used).
+  * Double-click a bond -> force it into / out of the sums of BOTH its atoms
+                          (shown "(manual)"); applied at the next Run analysis.
+                          (Same as the "Sum" boxes on the Environment tab.)
+  * Formula bar (top): the given formula (_chemical_formula_sum) next to the
+    formula modelled from the sites (occupancy x multiplicity / Z, H from the
+    D/A classes). Green = same composition; blue = same apart from H, which
+    the given formula lacks (H not located / inferred elsewhere); orange-red =
+    different composition or H count (listed) - check the D/A classes (H) or
+    the occupancies.
+  * Several sites at once: select them with Ctrl+click (add / remove one) or
+    Shift+click (a range), then right-click one of them - the class / role
+    (anions) or valence (cations) chosen is applied to all selected sites of
+    that kind as ONE pending change. With cations of different elements, a
+    state applies to the sites that have it ("3+ (As) - 2 of 3 sites").
+  * Right-click a CATION -> its valence (applied at the next Run, like classes):
+      one oxidation state (e.g. Fe2+, Fe3+);
+      "mixed" ▶ best BV fit - the mixture of two neighbouring states whose
+        average charge equals the site's BV sum, computed with the mixed
+        bond valences s = x s(v1) + (1 - x) s(v2); for vanadium the Cooper et
+        al. (2019) estimate Vp is used instead; or a chosen pair (e.g. 3+/4+);
+      "average site charge..." - type the average charge for an ideal or
+        charge-balanced model (3.5 = half 3+ / half 4+);
+      "automatic" - back to the formula / best-fit choice.
+    Mixed sites show e.g. "3.50+" in the Valence column; their bond valences
+    and BV table use the mixture. With a partial hydroxyl present, its H
+    fraction is then refined against these sums (both settle together).
+  * Right-click a site -> choose its class by hand: water, hydroxyl, partial
+                          hydroxyl, probable / possible / not acceptor, "other ▶"
+                          (hover: hydronium (H3O+), ammonium (NH4+), ammine
+                          (NH3), amide (NH2)), or "automatic (from BV)"
+                          (applied at the next Run).
+                          Hand-set classes show "(set; BV: ...)".
+                          The same menu sets the site's H-bond role: normal,
+                          acceptor only, or excluded from the H-bond search
+                          (shown in [brackets] after the class).
+  Notes at the bottom: charge balance, vanadium valence estimate, H per unit
+  cell (formula vs classes), occupancy warnings, sites that cannot be occupied
+  together, hand-set classes and bond overrides.
+
+  FORMULA CHARGE (left of "Optimize structure..."): the charge of the model
+    per formula unit after each analysis = cations (occupancy x
+    multiplicity x valence, mixed sites with their average) + H (from the
+    D/A classes) + anions (formal charges), with the three parts shown.
+    Green = neutral (within 0.05); yellow = within 0.5; orange-red = more.
+    A non-zero charge points at a wrong oxidation state, a wrong D/A class
+    (H count) or an occupancy.
+  KEEP CHARGE BALANCE (MIXED VALENCE, PARTIAL OH) (tick box next to it;
+    applied at the next Run, saved with the inputs; off by default): the
+    cations set to "mixed" ▶ best BV fit AND the H fractions x of partial
+    hydroxyls (their H count in the formula charge) are fitted together under
+    the restriction that the formula charge is zero (partial OH: see 5.2,
+    "Partial hydroxyl"). Each site's average charge stays as close to its
+    own best BV fit as the balance allows (least squares on the BV misfit:
+    sites whose BV sum hardly depends on the mixture take most of the
+    adjustment), within the states allowed (the chosen pair, or all states
+    of the element). Hand-set states and average charges stay fixed. The
+    notes list the balanced charges, or warn when neutrality cannot be
+    reached within the allowed states.
+
+  OPTIMIZE STRUCTURE... (button at the top of the Bond valence tab)
+    Optional pre-step: shifts atoms by small amounts to smooth the bond-valence
+    sums before the H-bond analysis. (Runs the bond-valence step first if no
+    analysis has been run.)
+    Which atoms move ("Move" column; click it or double-click a row to toggle;
+    "Default selection", "All anions", "None"): by default every anion with at
+    least one summed bond, and partly occupied cations. Fully occupied cations
+    stay fixed; H never move on their own but ride along with their parent.
+    Partners of a mixed site move together. Each atom moves only along the
+    directions its site symmetry allows, and never further than the radius.
+    What is minimised - ONLY the cation sums are fitted:
+        sum over cations of ((BVS - V) / sigma)^2   (partly occupied: x occupancy)
+      + moving cost: weight x (exp(steepness x (shift / radius)^2) - 1) per atom
+    Anion sums (donors and acceptors) are not targeted - their H and H-bonds
+    settle them in the H-bond analysis; the window only shows them.
+    The moving cost is small for small shifts and steep near the radius
+    (with the defaults a shift of 1/4 of the radius costs 0.2, 1/2 costs 1.1,
+    the full radius 19), so a cation's deficit is shared among its anions
+    (e.g. several waters bonded only to it) instead of one atom moving far.
+    A misfit beyond 0.25 vu grows only linearly, so a site that small shifts
+    cannot fix (wrong valence, occupancy ...) does not drag everything along;
+    such sites are reported ("still > 0.25 vu off").
+    Defaults: radius 0.03 A, sigma 0.05 vu, move weight 1, steepness 3. In tests
+    on 7 structures the mean shift was about 1/3 of the radius (0.003-0.009 A)
+    and most of the achievable cation misfit was removed (cation rms:
+    palisadeite 0.058 -> 0.008 vu; hydrofulbrightite 0.071 -> 0.030;
+    pickeringite 0.145 -> 0.087; rhodanthemite 0.062 -> 0.019). Larger radii
+    keep improving the sums but move atoms further from their refined
+    positions.
+    "Optimize" shows BVS after and the shift of every atom (green: cation
+    improved, red: still > 0.25 vu off) and a summary. "Use optimized
+    structure" adds a new entry "<name> [optimized]" to the structure list,
+    selects it and runs the analysis on it. The original stays in the list.
+    Your hand-made choices are carried over to it: D/A classes, valences /
+    site mixing, H-bond roles and ticked / unticked bonds (matched to the same
+    neighbours after the shifts). Changes made later on either entry stay
+    with that entry.
+    Outputs of an optimized structure are named
+      <name>_optimized_hypothetical.cif   (CIF: the moved coordinates are
+                                           written, with a comment line)
+      <name>_optimized_HydroGEN.ins/.hkl  (SHELXL: atom lines get the moved
+                                           coordinates, with a warning)
+    Optimized structures are kept in saved analyses (their coordinates are
+    stored and re-applied when the analysis is opened).
+
+ENVIRONMENT
+  All neighbours of a site within the environment radius (distance, bond
+  valence if any, symmetry operator), and all angles between neighbours within
+  a chosen radius.
+
+DISORDER
+  Top: exclusion groups - sets of positions (symmetry copies included) of which
+  at most one can be occupied at a time, with the sum of their occupancies:
+    = 1   exactly one position occupied
+    < 1   sometimes all vacant
+    > 1   inconsistent model (shown in red)
+  Each position is listed with its symmetry code, occupancy, class and H-bond
+  role. Bottom: every disordered water/hydroxyl and every site with a special
+  role or a hard fail, with the reason. Select rows and use "Set selected:
+  acceptor only / excluded / normal", or "Reset all roles".
+  "Lower symmetry...": describe the structure in a subgroup of index 2, so that
+  H disordered across a symmetry element can be inferred as ordered (see 5.8).
+
+SCHEMES
+  Whole-structure combinations (one option per donor; located H are part of
+  every scheme), best first. Columns: total score, BV score F&I and GRG, angle
+  penalty, H...H penalty, number of red / moderate / <1.75 A contacts, largest
+  deviation (F&I outside its target band; GRG from ideal), H per cell, and the
+  H-bonds. Red rows have red-flag contacts, orange rows moderate ones; red text
+  in H/cell means it disagrees with the formula.
+  "≡F&I" marks schemes with exactly the same F&I balance as #1 - typically
+  the same O...O edges with H-bonds running the other way round a ring of
+  waters. F&I cannot distinguish them; only the angle and H...H terms rank
+  them, so compare them (GRG column, refinement, H-bond details) before
+  choosing. The header says how many there are.
+  Lower part: flag box (H...H contacts of the selected scheme) and the
+  side-by-side BV sums (see 5.4). Double-click / "Finalize ▶" loads the
+  scheme into the Finalize tab.
+  "Refine ▶" puts the selected scheme (or #1 if none is selected) into the
+  Refinement comparison, selects it there and opens the Refinement tab.
+  "Compare": select two or more schemes (Ctrl+click / Shift+click) - or one
+  scheme when the CIF has located H - and press Compare. A window shows:
+    * a line per scheme listing the donors whose H-bonds differ from the first
+      column (and the change in total score);
+    * Scores: every term side by side (yellow = the columns differ);
+    * H-bonds by donor: acceptors, A1-D-A2 angle and angle penalty (⚠) per
+      donor; "Only donors that differ" hides identical rows;
+    * BV sums: F&I sum (▲ = amount outside the target band) and GRG deviation
+      for every anion;
+    * H...H and cone flags of each scheme.
+  When the CIF contains H atoms, "Located (CIF)" is added as the last column
+  (most useful with "Ignore located H", to see how the prediction differs from
+  the determined H). "Add all to Refinement comparison" copies them there.
+  "Combine into disordered scheme..." (blue, Compare window; 2+ schemes):
+  builds ONE disordered model from the compared schemes. Each scheme is a
+  component present in a fraction of the cells = its weight (default 1/n
+  each; enter other weights as 0.3 or 1/3 - they are normalised to sum 1).
+    - H at the same position in several components are merged (weights add;
+      an H in every component is whole); every H keeps its occupancy x its
+      weight (CIF occupancy; disorder group = component number for H that
+      belong to one component only).
+    - H of different components never clash with each other.
+    - Score: BV sums from all H together, each H-bond weighted (the donor
+      donates p x s, the acceptor receives p x s, the O-H counts p x s(O-H));
+      angle, H...H and cone penalties = the weighted average of the
+      components; red / moderate / cone counts = the largest among them.
+    - The result appears in the Refinement comparison as "Disordered: #1 x1/2
+      + #2 x1/2" (the info column gives each component's own score). Select it
+      for its BV sums, "BV table ▶", or "Finalize ▶" (its H are loaded as
+      "disordered H (x...)" rows) to export a CIF or SHELXL file. It is kept in
+      saved analyses.
+    - SHELXL: occupancies are fixed (10 + occupancy); link them to a free
+      variable (and use PART) yourself if you refine the disorder.
+
+  "Consolidate equivalent schemes after each run" (on by default): schemes
+  with the same acceptor ATOMS for every donor (they read identically in the
+  table) are merged and the best-scoring one is kept; the Rank column shows
+  "1 (x8)" = 8 schemes merged into #1. "var." ("1 (x2 var.)") = some of them
+  used other symmetry copies of the same acceptors, with another geometry and
+  score (only the best is shown; untick the option to see them all). Untick it to keep
+  them all; "Consolidate now" merges the current list on demand. (Ranks change
+  after consolidating; entries already in the Refinement comparison keep their
+  old numbers.)
+
+REFINEMENT
+  Refines the scheme selected on the Schemes tab (see 5.7). Modes:
+    All inferred H            every donor with hypothetical H
+    Worst-fitting donor(s)    the N donors with the largest misfit
+    Only penalised parts      donors with an angle penalty, an H...H contact,
+                              or a BV sum (own or acceptor's) off target
+  The comparison table collects entries: "Scheme #n" (unrefined),
+  "Scheme #n refined (...)" and "H in CIF (located)" ("Score H in CIF").
+  The blue "Refine" button at the start of the first row runs the refinement.
+  "Adjust..." (next to it) opens the scheme builder (see "Build scheme..." in
+  section 3) with the selected comparison entry loaded - or, if none is
+  selected, the scheme selected on the Schemes tab - so that single H-bonds can
+  be changed by hand while the menus show what each alternative would do to
+  the score. Notes: the builder places H ideally, so a REFINED entry is loaded
+  with its unrefined positions (refine the adjusted scheme again if wanted);
+  of a combined (disordered) scheme the component with the largest weight is
+  loaded; "H in CIF (located)" can be adjusted when "Ignore located H" is on.
+  "Add to Refinement comparison" then stores it as "Adjusted <name>".
+  Select an entry to see its BV sums and flags; "BV table ▶" or "Finalize ▶"
+  use the selected entry.
+
+SUBSCHEMES (disordered structures; empty for an ordered one)
+  A disordered structure is an average over ordered arrangements. A subscheme
+  is one of them, with the H-bond network it contains:
+    * The structure is expanded to P1 (same cell, every symmetry copy of every
+      site). For each set of disordered positions one choice is made:
+        - positions that exclude each other (split positions, alternatives
+          A/B, SHELX free variables, complementary occupancies, mixed anion
+          sites, PART groups, NH4+ and a nearby partial cation): one of them;
+        - a pair whose occupancies add up to clearly less than 1: also both
+          vacant;
+        - an isolated partly occupied position with occupancy 0.25-0.75:
+          present or vacant (>= 0.75 present, <= 0.25 vacant);
+        - cations sharing one position (e.g. Mg / Zn): the majority atom.
+    * The H of the SOURCE scheme are copied to every symmetry position; an H is
+      in the network when its donor and acceptor are both present. When its
+      acceptor position is vacant in that arrangement but an alternative of it
+      (a position that excludes it, e.g. the other half of a water split over
+      a 2-fold axis) is occupied and within the D...A limits, the H-bond goes
+      there instead: the same H, turned towards it. The status column and the
+      CIF header list these ("H-bond(s) moved to the occupied alternative").
+    * Valid = every donor present gets all its H (water 2, hydroxyl 1, ...;
+      acceptor-only / excluded donors none), no H closer than the H...cation /
+      H...anion minimum to an atom present, no H...H below the "impossible"
+      limit (H located in the CIF are not judged). Invalid ones (shown with
+      "Show invalid", or automatically when none is valid) list the reasons -
+      e.g. a scheme that sends whole H-bonds to both alternatives of one site
+      cannot be realised in any ordered arrangement.
+  Two ways to get each arrangement's network:
+    * "Search each arrangement anew" (ticked by default): every symmetry-
+      distinct arrangement (the N most frequent, "most frequent arrangements",
+      default 30) is built in P1 and its OWN best networks are searched, as
+      for any structure (classes, valences and roles of the disordered
+      structure); up to "networks each" (default 3) distinct networks per
+      arrangement are listed ("[network 2]" ...; networks with equal scores
+      are symmetry copies and shown once). This finds arrangements the
+      averaged scheme cannot express - e.g. in a mixed water / NH4+ layer a
+      water whose acceptor is replaced by NH4+ (never an acceptor) simply
+      bonds elsewhere. It takes about 1 s per arrangement. An arrangement
+      without any network is listed (invalid) with the reason (e.g. every
+      network has an H...H contact below the "impossible" limit).
+    * unticked: the H of the SOURCE scheme are inherited, as described below
+      (shows what the averaged scheme means locally; fast).
+  "Require linked layers" (ticked by default): a network is invalid when its
+  bonds and H-bonds together link the structure in fewer directions than
+  the arrangement's candidate H-bonds could - e.g. a water double layer
+  whose H-bonds all point to the sheets, leaving the sheets unconnected
+  ("layers not linked - 2D: sheets parallel to (0 0 1) are not linked ...").
+  The dimensionality is that of the periodic net of all summed cation-anion
+  bonds (NH4+ bonds included) and H-bonds of the P1 arrangement.
+  "Only formula-preserving subschemes" (for space-group / twinning analysis):
+  lists only subschemes whose P1 cell keeps the composition of the model on
+  the Bond valence tab - every element, H included, within +-1 atom per
+  formula unit (+-Z atoms per cell). The reference is the cell contents of
+  the model (occupancy x multiplicity of every site; H from the D/A classes
+  as they are set, by hand or not: water 2, hydroxyl 1, partial hydroxyl x,
+  NH4+ 4 ...), so it does not depend on Z. Z itself is taken from the sites
+  and _chemical_formula_sum (cell contents / formula, median over the
+  elements, rounded when close to a whole number); a wrong Z in the CIF is
+  renormalised for this check and the status line says so. The column
+  "Composition vs model (per f.u.)" gives each subscheme's difference per
+  formula unit (e.g. "✓ H -1.00, N -0.50, O +0.50"; ✗ = outside +-1); the
+  status line gives the model formula, Z and how many subschemes keep it.
+  Ticked BEFORE "Find subschemes" with "Search each arrangement anew", the
+  arrangements searched are pre-selected among those whose atoms (without
+  H) already keep the formula, so the searches are spent on them; ticking
+  or unticking afterwards only filters the list.
+  Source: the scheme selected on the Schemes tab, any Refinement comparison
+  entry (e.g. a refined scheme) or the Finalize selection; "Find subschemes".
+  (When searching anew, the source only supplies its located H and the list
+  of arrangements.)
+  A combined (disordered) scheme gives the subschemes of each component.
+  Invalid subschemes can be selected (BV sums of the H that fit), opened as a
+  structure and exported like valid ones, to see what goes wrong; their CIF
+  header and Bond valence notes list the reasons ("INVALID network").
+  "Export all to CIFs" writes every row listed (invalid ones too while "Show
+  invalid" is ticked).
+  Columns: scores PER ASYMMETRIC UNIT (the P1 cell's penalties divided by the
+  number of symmetry operations), directly comparable with the source scheme
+  (its score is given above the list; an opened subscheme shows the whole-cell
+  score on its Schemes tab), Frequency % = estimated share of the cells in
+  that arrangement (from the occupancies, choices treated as independent),
+  ×n = number of symmetry-equivalent arrangements merged ("Consolidate
+  symmetry-equivalent subschemes"; untick to list each one), the occupied
+  disordered positions, and the status. Classes, oxidation states and H-bond
+  roles are those of the disordered structure. Up to 4000 arrangements are
+  examined (beyond that a sample, most frequent first); the 60 most frequent
+  valid ones are scored at once, the others when selected. "Strained H
+  directions" = the angle penalty is clearly worse than in the source scheme:
+  an H keeps the direction of the averaged scheme although e.g. a cation
+  present in this arrangement blocks it - refine the subscheme.
+  Select a row to see its BV sums (P1). Buttons:
+    Open as structure   adds "<structure> [subscheme n]" to the Structure box:
+                        an ordered P1 structure whose network is its only
+                        scheme (#1); every tab works on it (BV table, details,
+                        Refinement, Finalize, Export CIF writes its P1 CIF).
+                        The parent keeps its results - choose it in the
+                        Structure box to go back. While the subscheme is
+                        shown, the Subschemes tab is empty (it is ordered:
+                        the list belongs to the parent) and says so; "Find
+                        subschemes" there switches back to the parent and
+                        its list (no new search).
+    Refine ▶ / Finalize ▶   open it and go straight there.
+    An arrangement for which "Search each arrangement anew" found no network
+    at all cannot be opened (a message gives the reasons); it is not searched
+    again when selected.
+    Export CIF          the selected subscheme(s): one -> <name>_hypothetical_
+                        subscheme<n>.cif next to the CIF; several -> a new
+                        folder (see below).
+    Export all to CIFs  every valid subscheme listed -> a new folder.
+  When the source scheme is refined on the Refinement tab, subschemes found from
+  it are re-derived from the refined scheme and rescored automatically.
+
+LOCATED H-BONDS
+  Plain geometric D-H...A list for H atoms present in the CIF (uses the
+  "Located H" criteria and the Donors / Acceptors element lists).
+
+INFERRED H-BONDS
+  Top: every donor (water/hydroxyl O, or O carrying located H) with its
+  located H and its candidate acceptors, numbered 1st, 2nd ... by D...A
+  distance, with the angle tests and the result (pass / reason for failing).
+  Bottom: the donation "options" of each donor with missing H (two H-bonds for
+  a water, one for a hydroxyl, one for a water whose other H is located),
+  with geometry, penalties and status (impossible options are listed with the
+  reason).
+
+H-BOND DETAILS
+  Table of every H-bond of the selected scheme / refinement entry / Finalize
+  selection, as in a new-mineral description:
+    D-H...A   D-H   D...A   H...A   angle DHA   apt_sym   Occ.
+  apt_sym = symmetry code of the acceptor (n_klm, "." = x,y,z; the footnote
+  gives each code as an operator). Occ. = occupancy of that H-bond: donor
+  occupancy x occupancy of the acceptor position for located H that bond to
+  whichever alternative of a disordered site is present, written as 1, 1/2,
+  1/3, 2/3, 1/4, 3/4 ... (as fraction characters) when it is one of those
+  within 0.002, otherwise two decimals. "*" = hypothetical H.
+
+BV TABLE
+  Filled in by every Run analysis - also for structures without any H: with
+  no scheme (no H in the structure, nothing to infer) it shows the plain
+  bond-valence analysis, "[bond valence only - no H]", without the H columns
+  (including hand-set / mixed valences and bond inclusions; mixed sites are
+  listed in the notes). When a scheme is generated and selected, the table
+  follows it.
+  Bond-valence table in the new-mineral layout: anions as rows, cations as
+  columns, then H, H bond (...acceptor), D (donated), A (accepted) and
+  Sigma_an; last row Sigma_cat. Choose what to show (selected scheme,
+  refinement entry, Finalize selection) and the H-bond method
+  (Ferraris & Ivaldi, or GRG). Cation values: "x2->" counted twice in the row,
+  "x2 (down arrow)" counted twice in the column. "*" marks hypothetical H.
+  Footnotes give the parameter sources. Save .txt / .csv (opens in Excel; cells
+  with several lines keep their line breaks) or Copy.
+
+FINALIZE & CIF
+  The bold line under the buttons says what is being finalized, e.g.
+  "Finalizing: scheme #1", "Finalizing: optimized structure, scheme #1,
+  refined (all, <=10 deg)", "... (edited by hand)" after ticking / unticking.
+  Opening this tab while an entry is selected in the Refinement comparison
+  (e.g. a refined scheme) loads that entry automatically - once per selection,
+  so hand edits are kept when you switch tabs and come back; select another
+  entry to load it instead. "Load best scheme" goes back to scheme #1.
+  Every possible hypothetical H-bond, grouped by donor - each donor -> acceptor
+  position is listed once. A water's two H shift slightly depending on its other
+  H-bond, so the exact positions are taken from the option with exactly the
+  ticked acceptors (the columns show the position actually used). Refined H
+  that were moved are listed as extra "refined H" rows. Located H (marked a
+  square) are always included and cannot be unticked.
+  * Tick/untick: click the box, double-click the row, or select rows + Space.
+  * Bold = the H belongs to an option that passes all tests.
+  * Red / orange rows and the red flag box: H...H contacts among the H in use
+    (located H included).
+  * H per cell of the selection vs the formula is shown under the flag box.
+  * Occupancy column: an H gets its parent's occupancy; an H generated off its
+    parent's symmetry element gets occupancy / number of copies - the copies
+    are alternative orientations (disorder).
+    Exception - H ordered on a special position: when the parent's own site
+    symmetry maps one of its H onto another H of the same scheme (e.g. a water
+    on a 2-fold axis donating to two symmetry-equivalent acceptors), the pair
+    is one ordered water, not disorder. The first H is a whole atom ("ordered
+    on the OW5 site"), the other is its "symmetry image of H6A (not written)".
+    Only the first is exported (CIF and SHELXL, full occupancy); the space
+    group generates the other. If the two H go to acceptors that are NOT
+    related by the site symmetry (e.g. OW5 -> OW8 and O8), the axis makes two
+    orientations, and both H stay half occupied (genuine disorder).
+    Refine keeps such pairs exact symmetry images.
+  * Buttons: Load best scheme, Check all passing, Uncheck all,
+    Export hypothetical CIF, SHELXL (.res / DFIX)..., BV table.
+  * Hypothetical H get short SHELXL-style names (<= 4 characters): H + number
+    + letter, using the parent's number when free (OW5 -> H5A, H5B), continuing
+    a located H of the same parent (H8A located -> H8B), otherwise the next free
+    number (W9A -> H9A, H9B; W9B -> H10A, H10B ...). The same names are used in
+    the tables, the CIF and the SHELXL output.
+
+SHELXL OUTPUT (Finalize & CIF > "SHELXL (.res / DFIX)...")
+  Source: the .res embedded in the CIF (_shelx_res_file), or "Load .res...".
+  * With a .res: "Write .ins (+ .hkl)" writes <name>_HydroGEN.ins (then
+    _HydroGEN1, 2 ...) next to the CIF, plus <name>_HydroGEN.hkl if the CIF
+    embeds the hkl data - ready for SHELXL. In it:
+      - each new H line is inserted directly AFTER its parent atom (after the
+        parent's continuation line), so "-1.2" ties its Uiso to 1.2 x Ueq of the
+        parent;
+      - the H occupancy field is copied from the parent (keeps free-variable
+        links such as 21.0 / -21.0 for split sites);
+      - DFIX 0.82 0.07 parent H and DFIX 1.33 0.07 H H (two H on one parent) are
+        added before WGHT/FVAR;
+      - H is added to SFAC/UNIT if missing; with "Ignore located H" the original
+        H lines are removed and restraints naming them are commented out (REM).
+  * Without a .res: a text box with the same DFIX lines and H atom lines
+    (SFAC number "1" for H - change it to match your SFAC line; occupancy
+    11.0 or 10 + occupancy), with the reminder to place every H line after its
+    parent atom.
+  Export CSV... (top bar) writes all tables of the current structure.
+
+
+-------------------------------------------------------------------------------
+5. HOW THE ANALYSIS WORKS
+-------------------------------------------------------------------------------
+5.1 Bond valence
+  s = exp((R0 - R) / b). Parameters: rows marked "user" first, then for
+  cation-O Gagne & Hawthorne (2015), then Brese & O'Keeffe (1991), then Brown &
+  Altermatt (1985); for other anions Brese & O'Keeffe, then Brown & Altermatt.
+  * Only cation-anion pairs; contacts shorter than "Ignore non-H <" to
+    non-H atoms are ignored.
+  * Bonds with s >= "Sum s >=" are summed; s between "List s >=" and the sum
+    cutoff are listed but not summed.
+  * A neighbour's contribution is multiplied by the neighbour's occupancy;
+    a site's own occupancy is never used (sums are "as if the atom is there").
+  * Occupancies above 1 (sometimes left in a CIF to show that a site holds
+    some of a heavier atom) are treated as a fully occupied site: a lone atom
+    gets occupancy 1; several atoms with the SAME coordinates whose
+    occupancies add up to more than 1 are scaled to add up to 1. This is used
+    everywhere (bond valences, disorder, formula, subschemes); the Occ. column
+    shows "1.000 (CIF 1.045)" and the notes list the changes. Output CIFs
+    keep the CIF's own values.
+  * S, Se, Te are cations if an O is within 2.0 A, otherwise anions; N is a
+    cation if an O is within 1.6 A.
+  * Oxidation states: elements with one state get it; otherwise the bond
+    valences decide - each site takes the state whose BV sum (calculated
+    with that state's parameters) comes closest to the state itself. The
+    _chemical_formula_sum charge balance only breaks near-ties (fits within
+    0.25 v.u. of each other), because a formula can be incomplete (H left
+    out, a placeholder, another model); when the BVs overrule it the notes
+    say so. A formula listing an element that is not in the atom list is
+    not used at all.
+  * Uranium: a U site with a uranyl ion (two O on opposite sides, O-U-O
+    >= 160 deg, within 2.2 A, one of them shorter than 1.95 A) is U6+, even
+    when its BV sum comes out low in a poorly refined structure. For a
+    genuine U5+ uranyl, set the valence by hand (right-click the valence).
+  * Vanadium: Vp = 1.538 Vc - 2.692 (Cooper et al. 2019), Vc from V5+
+    parameters, reported in the notes.
+
+5.2 D/A (donor / acceptor) classes (from the BV sum WITHOUT bonds to H)
+  O:
+     BVS < 0.10            water (BVS < min)  - water bonded to (almost) no cation
+     0.10 - 0.70           water
+     0.70 - 1.40           hydroxyl
+     1.40 - 1.85           probable acceptor
+     1.85 - 1.95           possible acceptor
+     >= 1.95               not acceptor
+  Any class can be changed by right-clicking it on the Bond valence tab.
+  H per unit cell implied by the classes (2 per water, 1 per hydroxyl, x per
+  partial hydroxyl, 3 per H3O+, 4 per NH4+ ..., x occupancy x multiplicity)
+  is compared with the formula (n_H x Z). (Some CIFs give the formula without
+  H - then the check always reports a mismatch.)
+
+  F&I targets of donors (own X-H bonds not counted): |V| - number of H, i.e.
+  water 0, hydroxyl 1, H3O+ -1, NH4+ -1, NH3 0, NH2 1 (+- "Donor band"); NH4+,
+  NH3 and H3O+ use the wider "Group band" (0.6 vu): F&I gives every X-H about
+  0.85 vu, so these centres always look overbonded. GRG target: |V| (2 for O,
+  3 for N). GRG uses D-H 0.918 A for O and the R0 of the H-N parameter
+  (1.014 A, s = 1 vu) for N before its +- "GRG D-H" fit.
+
+  Partial hydroxyl (set by hand)
+    For an O that is a hydroxyl in part of the cells and an H-bond acceptor in
+    the others (BV sum without H between a hydroxyl and a probable acceptor).
+    It gets ONE H whose fraction x (0..1) is refined:
+      start:  x = 2 - BVS(w/o H)        (GRG-like: cations + x x 1 = 2)
+      then, from the best scheme, the F&I sum must equal its target 2 - x:
+              cations + accepted - x * donated = 2 - x
+              x = (2 - cations - accepted) / (1 - donated)
+      and the search is repeated with the new x until x changes by < 0.02
+      (at most 4 rounds; the history is given in the Bond valence notes,
+      e.g. "O6 x = 0.25 (0.32 -> 0.25 -> 0.25)").
+      With "Keep charge balance (mixed valence, partial OH)" ticked, x is
+      refined under the restriction that the formula charge is zero: the x
+      values (and the average charges of "mixed" valence sites, if any) are
+      fitted together by least squares on the BV misfit - each x as close to
+      its own F&I value above, each mixed site to its own best BV fit, with
+      weight (1 - donated)^2 for x - within x = 0..1. The mixed-site charges
+      found are then applied to the bond valences and the search is repeated
+      until they agree (at most 4 rounds). The notes give the final formula
+      charge, or warn when neutrality cannot be reached.
+    The H counts x in H/cell and in the GRG O-H term, donates x x s, and is
+    written to the CIF with occupancy x (Finalize: "H fraction x...").
+    The site still accepts H-bonds from other donors.
+
+  Nitrogen (BV sum without H; N3-, |V| = 3)
+     BVS < 0.35            ammonium (NH4+)  - 4 H
+     0.35 - 1.25           ammine (NH3)     - 3 H
+     1.25 - 2.25           amide (NH2)      - 2 H
+     >= 2.25               probable acceptor
+    (limits nh4_max / nh3_max / nh2_max in hbond_core.py). Hydronium (H3O+)
+    cannot be told from water by BV alone - set it by hand.
+    NH4+, NH3 and H3O+ place their H on an ideal tetrahedron (H-X-H 109.5
+    deg) rotated to point as closely as possible at the chosen acceptors (a
+    weighted fit; located H of the group are kept and given a high weight).
+    Their options choose 3 / 4 acceptors; every pair of their H-bonds gets the
+    A1-D-A2 penalty; the water acceptor cone does not apply to them.
+    NH4+, NH3 and H3O+ are never acceptors (no free lone pair); NH2 can be.
+    SHELXL: DFIX 0.87 for N-H, and DFIX 1.42 (O: 1.34) for every H...H pair
+    of the group.
+
+  Ammonium is not bonded to cations: for an N classed NH4+ (automatically or
+  by hand) every N-cation contact is dropped from BOTH sums (shown "NH4+ -
+  cation: not a bond" in the bond list; a hand override still wins), and a
+  partly occupied cation closer than 3.0 A ("nh4_cation_min") cannot be
+  occupied together with it - listed in the notes and as an ammonium group on
+  the Disorder tab ("N (NH4+) excludes the nearby cations ..."; NH4+ + the
+  fullest cation position should not exceed 1). A FULLY occupied cation that
+  close is reported with a warning (the NH4+ class is then doubtful).
+  Example (stormite): N (0.21) loses its contacts to Na2 / Ca2 (BVS 0.27 ->
+  0) and excludes them (0.21 + 0.30 = 0.51).
+
+  Ammonium bonds (García-Rodríguez, Rute-Pérez, Piñero & González-Silgo 2000,
+  Acta Cryst. B56, 565-569; "NH4+ bonds: García-Rodríguez 2000" in Settings,
+  on by default): NH4+ is treated as ONE cation centred on its N. Once an N
+  is classed as ammonium, it is bonded to every O, F and Cl around it with
+      s = exp((Ro - d(N...X)) / 0.37),  Ro = 2.226 (O), 2.129 (F), 2.619 (Cl) A
+  (bvparm2020 rows "NH 1 O/F/Cl", code s). Its four H are already included in
+  these parameters, so:
+    - the NH4+ bonds count for the anions like any cation bond (also in their
+      sums WITHOUT H - the anions' classes are re-derived from them, listed
+      in the notes when one changes);
+    - the N's own N-H bonds are not summed; its BV sum should be about 1
+      ("Valence" 1+ (NH4+), BVS - |V| against 1);
+    - the ammonium H only set the geometry: they are still placed (tetrahedron
+      towards the chosen acceptors), checked for H...H contacts and angles and
+      written to the CIF, but donate no further bond valence (F&I and GRG);
+    - the NH4+ site itself is not scored (like any cation); in the BV table it
+      is a cation column "N" and its H are not listed.
+  Untick the box to go back to the H-bond treatment of ammonium (N with four
+  F&I / GRG H-bonds, "Group band").
+
+  Mixed sites (two partly occupied atoms at one position, e.g. N 0.21 /
+  OW2 0.79 in stormite): each is classed on its own and counts with its own
+  occupancy; they exclude each other (their H never clash, they are not each
+  other's acceptor) and are listed in the notes. Example (stormite): N is
+  NH4+ (BVS w/o H 0.27) and donates to OW1B, O4 and two OW2 copies, while
+  OW2 is a water donating to O6 and O5.
+
+  Cations that block H directions: a cation position that is mostly vacant
+  (total occupancy of the position < "A-D-C min occ.", default 0.5 - e.g.
+  Na 0.24 + Ca 0.06 in stormite) does not make candidates fail the A-D-C test.
+
+5.3 Candidates and options
+  Candidates: anions with D...A between "D...A min" and "D...A max".
+  A candidate passes if, for every cation C bonded to the donor D, the angle
+  A-D-C is above "Pass if A-D-C >" and outside the forbidden cone (vertex at D,
+  axis D->C, full vertex angle "Cone vertex"). A-D-C angles below the soft /
+  hard angles are penalised in the score (see 6, Angle scoring).
+  Hypothetical H: D-H = "D-H", H-D-H = "H-D-H" for water; each H is placed as
+  close as possible to its acceptor (exact solution, minimising the sum of
+  squared H...A distances). For a water with one located H, the second H is
+  placed at the H-D-H angle from it, nearest its acceptor.
+
+5.4 Two ways of counting the H-bond valence
+  F&I (Ferraris & Ivaldi 1988):  s(H...A) = (D...A / d0)^-n + c
+      Sigma = cations + accepted - donated  (the O's own O-H bonds are not
+      counted). Targets: water 0 +- band, hydroxyl 1 +- band, O with located
+      H only: 2 - number of H, other anions |valence|. Depends only on D...A,
+      so it is the same for located and hypothetical H and does not change
+      when H are rotated.
+  GRG (Gagne & Hawthorne 2015 H-O parameters, R0 0.918, b 0.427)
+      Sigma = cations + O-H + accepted, target |valence| (2 for O). Each D-H
+      may change by up to +- "GRG D-H +-" (in steps of "step"; the smallest
+      change wins ties); every donor gets the D-H lengths that bring its own sum
+      closest to 2
+      (iterated, because accepted H-bonds depend on the other donors). The
+      lengths used are listed under the GRG BV table.
+      Hypothetical H are PLACED at "D-H (placement)" (0.82 A) for all geometry
+      (H...H, cone, H...cation, tables, CIF), but their GRG valences start from
+      "D-H (GRG)" (0.918 A) along the same direction.
+      Located H: with "GRG: located H at D-H (GRG)" (on by default) their GRG
+      valences also start from 0.918 A along the D-H direction (X-ray D-H of
+      ~0.8 A would otherwise give O-H valences well above 1 and water sums of
+      ~2.6 vu). Their geometry is not changed.
+  Contributions to an acceptor are weighted by the donor's occupancy and by
+  multiplicity(donor) / multiplicity(acceptor).
+
+5.5 Score of a scheme (higher = better; all terms are 0 or negative)
+  total = Start score (1000) + BV weight x BV score + angle penalties
+          + H...H penalties
+  Every scheme starts at 1000: a good scheme with a few minor violations stays
+  positive, one major violation (-1000) makes it negative.
+  The BV weight (default 5) makes the F&I bond-valence balance dominate, so
+  minor geometry issues (A-D-C a few degrees under 90, H...H just under 2.1 A)
+  only decide between schemes with similar BV, while major ones (A1-D-A2 < 90,
+  H...H < 1.95 A, acceptor-cone violations) stay prohibitive.
+  BV score   = - sum over anion sites of a site cost:
+               (distance outside the target band / BV scale) ^ BV power,
+               plus, for water/hydroxyl, a minor penalty that grows linearly to
+               "minor pen." over the first "minor zone" vu outside the band.
+               With power 4 one site off by 0.3 vu costs 81, four sites off by
+               0.1 vu cost 4 together - so a scheme cannot sacrifice one atom
+               to improve the others a little.
+               "Rank by" chooses F&I (default), GRG, or their mean.
+               "Weight by occupancy" (on by default, BV scoring row): each
+               site's cost is multiplied by its occupancy - a low-occupancy
+               position is less certain in the data and a smaller part of the
+               structure (e.g. a 0.3-occupied water counts 0.3 of a full one).
+               Also used for the GRG score and the refinement.
+  Angle      = A-D-C penalties + A1-D-A2 penalty for two H-bonds of one donor:
+                 A1-D-A2 >= 90 deg     0
+                 70 - 90 deg           "pen. at limit" (-100) x ((90 - angle) / 20)^2
+                                       (87 deg: -2; 80 deg: -25; 76.5 deg: -46)
+                 < 70 deg              "pen. below" (-1000) x (1 + (70 - angle) / 10)
+                 145 - 160 deg         "pen. at limit" (-100) x ((angle - 145) / 15)^2
+                 > 160 deg             "pen. beyond" (-1000) x (1 + (angle - 160) / 10)
+               (Refined structures with located H do show acceptor pairs at
+               ~76-88 deg, so these are only mildly penalised. At the wide end
+               the two H-bonds would point away from the side the water's H are
+               on; real waters reach ~145 deg - e.g. OW20 in pickeringite.)
+               Options outside 70-160 deg do not "pass" (not bold in Finalize).
+  H...H      = sliding scale for each H...H contact between H on different donor
+               atoms (symmetry copies included):
+                 d >= 2.10 A           0
+                 1.95 <= d < 2.10 A    "mod. pen." x ((2.10 - d) / 0.15)^2
+                                       (e.g. 2.06 A: -7; 2.00 A: -44; 1.96 A: -87)
+                 d < 1.95 A            "red pen." x (1 + (1.95 - d) / 0.1)
+                                       (1.95 A: -1000; 1.85 A: -2000)
+               d is the REAL H...H distance. Red / moderate / impossible flags
+               and counts always use the real distance.
+               Optional "H flex" (default 0): the PENALTY (only) is taken at
+               d + H flex for each hypothetical H in the contact, as an allowance
+               for idealised H that could still bend; a contact that is red at
+               its real distance always keeps at least the full red penalty.
+               Idealised H that clash in the search can often be relieved on the
+               Refinement tab - refine the candidate schemes before rejecting
+               one for an H...H contact.
+               Contacts between H on sites that cannot coexist are ignored.
+               Contacts between two DISORDERED donors whose occupancies add up
+               to <= 1 (they may never be present together) are not geometry
+               violations: they count as donor conflicts ("Dis." column, small
+               "Dis. conflict pen."), are never "impossible", and are listed
+               separately in the flag box. A contact counts as a geometry
+               violation between two ordered donors, an ordered and a disordered
+               donor, or two disordered donors whose occupancies sum to > 1.
+  Acceptor cone = an H-bond arriving at a water (with two H in the scheme) from
+               between its own H costs "red pen." each ("Cone" column). The
+               cone has its apex at the water O, its axis along the bisector of
+               the two O-H, and at the height of the H a base diameter of
+               "Acc. cone x" (1.5) x the H...H distance (half-angle ~64 deg for
+               D-H 0.918 A, H-D-H 108 deg).
+  The search ranks by F&I exactly (vectorised); kept schemes are then
+  re-evaluated with GRG. If the number of combinations is at most
+  "Exhaustive <=", all are scored; otherwise a beam search followed by
+  one-donor-at-a-time improvement is used.
+
+5.6 Impossible configurations (removed unless "Show impossible
+    configurations" is ticked)
+  An option is impossible if one of its H is closer than "H...H min" to
+  another H of the option or to a located H, closer than "H...cat. min" to a
+  cation, or closer than "H...an. min" to an anion other than its parent.
+  Schemes with an H...H contact below "H...H min" are hidden.
+
+5.7 Refinement
+  The inferred H of each chosen donor are rotated rigidly about the donor O
+  (at most "Max rotation"; a water with one located H turns only about that
+  O-H bond), and a water's H-D-H angle may open or close by up to
+  +- "H-D-H +-" (default 2 deg). The fit minimises
+     sum over anions ((GRG Sigma - ideal) / sigma_bv)^2
+   + sum over H...H geometry contacts < "H...H mod." of x^2 + x^4,
+       x = (limit - d) / sigma_hh   (increasingly punishing below 2.1 A;
+       disorder-only donor conflicts count 0.25 x^2)
+   + every acceptor-cone violation: 1 + ((half-angle - angle) / 5 deg)^2
+   + "Similar-strength weight" x ((s1 - s2) / 0.05)^2 for a water whose two
+       H-bonds differ in GRG strength (a moderate reward for balanced donation)
+  by a bounded pattern search. Located H are never moved. F&I sums do not
+  change with rotation, so with F&I ranking a refinement improves the score
+  by relieving H...H contacts and cone violations; its BV effect shows in the
+  GRG columns.
+  "Auto-pick scheme": instead of the selected scheme, refine the best-scoring
+  scheme among the top 20 that has no H...H geometry contact < 2.1 A and no
+  cone violation; if none has, the one with the smallest H...H violation sum.
+  "Also refine D-H lengths" (off by default): every inferred D-H may also
+  lengthen or shorten by up to +- "range" (default 0.06 A), with a Gaussian
+  restraint added to the sum above:
+     "Restraint weight" x (change in D-H / sigma)^2,   sigma = range / 2
+  so the range is +- 2 sigma. With the default weight 1, moving an H by the
+  full 0.06 A costs 4 - about as much as one anion 0.10 vu off target with
+  sigma_bv 0.05 - so H only move when that clearly improves the BV fit (the
+  main driver) or relieves H...H contacts; they never leave the range.
+  While this is on, the refined lengths are used as they are in the GRG sums
+  (no separate +- "GRG D-H" re-fit of those H), also later in the BV table,
+  the comparison and the CIF; the refined lengths are kept in saved analyses.
+  The info column lists the changes, e.g. "OW3 4.2 deg (D-H +0.021/-0.008 A)".
+  Located H are never changed.
+
+5.8 Disorder and occupancy
+  Two sites cannot be occupied together if (a) both are partly occupied,
+  closer than "Split <" and their occupancies add up to <= 1 (+0.05), or
+  (b) they belong to different _atom_site_disorder_group values of the same
+  _atom_site_disorder_assembly and are within "PART <" (a negative group,
+  as SHELX PART -n, also excludes its own symmetry copies). Such pairs are
+  listed in the notes; H...H contacts between their H are ignored, and they
+  are not used as donor/acceptor or cation of each other.
+  (c) they are ALTERNATIVE positions of one site, at any distance (up to
+  "PART <"): their occupancies are tied to the same SHELXL free variable with
+  opposite signs in the embedded .res (e.g. OW6A 81.0 / OW6B -81.0 = p and
+  1 - p), or their labels differ only in a final letter (OW6A / OW6B, O3')
+  and their occupancies add up to 1 (+-0.05). Each excludes only its
+  partner (the nearest copy): the other copies belong to neighbouring
+  disordered sites and may be present with it - e.g. in agujaite (P3c1,
+  disorder around a 3-fold axis) the local arrangement is one OW6B and two
+  OW6A, so OW6B excludes its own OW6A (2.66 A) but can H-bond to the other
+  OW6A copies. Without this rule OW6A / OW6B (2.66 A apart - beyond "Split
+  <" and a normal O...O H-bond distance) were treated as two waters present
+  together, and schemes with OW6B -> OW6A (its own alternative) appeared.
+  The notes list the alternatives found, and warn about partly occupied
+  pairs whose occupancies add up to 1 but carry no such evidence ("Possible
+  alternatives NOT treated as such") - give those a CIF disorder assembly with
+  PART 1 / PART 2, or A / B labels, if they are one disordered site.
+  (d) they are nearby (within "PART <") and their occupancies are
+  COMPLEMENTARY (p and 1 - p, but not ~1/2): two configurations of one
+  disorder - e.g. in peterbaylissite Hg4 (0.036) and the C1-O3-O4 group
+  (0.964). A 50/50 pair is ambiguous (two half-occupied atoms may just as well
+  belong together), so it is not used; see the valence rule below.
+  (A fully occupied atom in a PART group is present in every configuration
+  and is not excluded.)
+
+  Bond valences in disordered structures
+    * A bond between two sites that cannot be present together (any of the
+      rules above) is NOT summed for either atom ("not together (other
+      disorder configuration)" in the bond lists). E.g. Hg4-O3 1.50 A
+      (s = 2.95) no longer adds to Hg4 or O3.
+    * A bond between two PARTLY occupied atoms that would exceed the valence of
+      either atom (typical of a 50/50 split, where occupancies cannot tell
+      which atoms belong together) is not summed either ("s > valence").
+    * A partly occupied atom keeps its bonds to fully occupied neighbours, and
+      those neighbours receive the occupancy-weighted contributions of every
+      configuration (e.g. O2 gets 0.964 x s(C1-O2) + 0.036 x s(Hg4-O2)).
+    * Every default can be changed by hand: Environment tab, "Sum" column
+      (click the box or double-click the row), or double-click the bond in the
+      Bond valence tab. The change applies to BOTH atoms of the bond and is
+      queued like class / valence changes - press Run analysis to recalculate
+      the sums (and any mixed valences) after tweaking the environments.
+  Every H takes its parent's occupancy (shown in Finalize and written to the
+  CIF); located H whose occupancy differs from their parent's are reported.
+
+  Exclusion groups: sets of positions (symmetry copies included) that ALL
+  exclude each other, e.g. W9A/W9B, or four positions W10A, W10A', W10B,
+  W10B' around an inversion centre. Occupancy of one position means the
+  others in its group are vacant. A chain A-B, B-C in which A and C can
+  coexist gives two groups (A, B and B, C), not one.
+  "Disordered" = partly occupied anion, or member of an exclusion group.
+
+  H-bond roles of anion sites
+    normal       donor if classed water/hydroxyl, acceptor otherwise.
+    acceptor     donates nothing; other donors may still donate to it; its own
+                 BV sum is not scored (it would be incomplete).
+    exclude      neither donor nor acceptor, not scored.
+  Located H on acceptor-only/excluded sites are left out. The H that such sites
+  would carry are reported as "H/cell x + y on acceptor-only/excluded sites",
+  so the formula check still adds up.
+
+  Located H bonding to a disordered site ("conditional" located H)
+    A located H whose H-bond goes to a disordered site describes an average over
+    the disorder variants. It is treated as bonding to WHICHEVER alternative
+    position is present: one H-bond "branch" per alternative it can reach (same
+    located-H criteria), with probability p = that alternative's occupancy.
+      - The acceptor row counts the branch's s as if the site were present; the
+        donor donates p x s (shown as "...W9A (x0.40)" in the BV table - or a
+        fraction such as x1/2 - with D = p x s).
+      - Such an H never counts as clashing with the inferred H of the disordered
+        sites it bonds to (in each cell only one arrangement exists).
+      - If an inferred H on alternative X would sit within "H...H red" of it, the
+        branch to X FLIPS: in the cells where X is present the located H turns away
+        and that fraction of its H-bond is lost. Penalty = "Flip pen." x p.
+        Finalize shows "FLIPS away here"; the BV table shows "(flipped, x...)".
+    Example (dutchmanite-LDH): H2A on OW2 points at W9A (0.40) and can also reach
+    W9B (0.60). W9A donating to OW2 and O4 flips only the W9A branch of H2A.
+
+  Inferred H split over a disordered acceptor ("split H", on by default)
+    When two passing acceptor positions of a donor are alternatives of one
+    disorder (they cannot be occupied together, e.g. a water split over W9A /
+    W9B), the search also offers options in which one H is SPLIT: one position
+    towards each alternative, with fraction p = occupancy of that alternative /
+    (sum of both) - e.g. OW3 -> W9B (x0.60) and W9A (x0.40).
+      - A water keeps one whole H; each split position is placed at the usual
+        H-D-H angle from that whole H (the whole H points between its two
+        ideal placements). A hydroxyl's single H can be split the same way.
+      - F&I: the donor donates p x s for each position; the acceptor row counts s
+        as if the site were present. GRG: the O-H counts p x s(O-H) per position.
+      - A1-D-A2 / A-D-C penalties are weighted by p; a split H never clashes with
+        H on the alternative it does not point to, or with H that need that
+        alternative to be absent.
+      - Finalize lists each position as its own row ("split xp" in the occupancy
+        column); the CIF gets occupancy = parent occupancy x p; the SHELXL lines
+        copy the ACCEPTOR's occupancy field when a .res is available (so the H
+        follows that site's free variable), and get DFIX 1.33 to the whole H.
+      - At most one split per option (two acceptors per H, one split H per donor).
+
+  Disorder across a symmetry element - "Lower symmetry..." (Disorder tab)
+    Some disorder is only an average over symmetry-related arrangements: e.g.
+    rhodanthemite in C2/m has an H-bond ring that runs either way round
+    (OH3 -> OW5 -> OW5' -> OH3), so its H (H3, H5B, H5C) are half occupied and
+    each sits 1.1-1.6 A from its own mirror / 2-fold copy. Judged in C2/m every
+    arrangement clashes with a symmetry copy of itself. "Lower symmetry..."
+    lists every subgroup of index 2 (same cell; e.g. C-1, C2, Cm and the
+    primitive P2/m-type subgroups of C2/m) with the number of such disordered
+    H pairs it separates, and recommends the best (a note in the Bond valence
+    tab points here when such H are present). "Create and open" writes
+    <name>_<subgroup>.cif next to the original and adds it to the structure list:
+      - every site whose symmetry copies are no longer equivalent becomes two
+        independent sites (label + a / b; e.g. OW5 -> OW5a, OW5b);
+      - by default the disordered (partly occupied) H are removed so that they
+        are re-inferred, now ordered; certain H are kept ("remove all H" or
+        "keep all" are the alternatives).
+    Then press Run analysis. For rhodanthemite C2/m -> C-1 the two best schemes
+    are the two senses of the ring (OH3 -> OW5b -> OW5a -> OH3 and reverse),
+    with no violations - the arrangement of the H located in the P-1 model.
+    Only disordered H count towards the recommendation: a half-occupied water
+    on an inversion centre (dutchmanite-LDH W10A/W10B) stays half occupied in
+    any subgroup, so lowering the symmetry does not help there.
+
+  Hard fails: a donor fails hard when it has no viable option at all (every
+  placement of its H is impossible), or when no scheme survives and the best
+  scheme that ignores impossibility has a < "H...H min" contact involving it.
+  Remedies, from mildest: check classes (a strong acceptor classed as
+  hydroxyl often causes this); "Re-evaluate without hard-fail donors"; set
+  disordered water/OH to "acceptors only" or "excluded"; or tick "Show
+  impossible configurations" to inspect them.
+
+  Suggested workflow for a disordered structure
+    1. Run with "Disordered water/OH" = donors. Check the H-per-cell line and
+       the exclusion groups on the Disorder tab; fix classes by right-click.
+    2. If there are hard fails, press "Re-evaluate without hard-fail donors".
+    3. For a quick picture of the ordered framework, run with "acceptors only"
+       (or "excluded"); compare totals and BV tables with the full analysis.
+
+
+-------------------------------------------------------------------------------
+6. PARAMETER REFERENCE  (default in brackets)
+-------------------------------------------------------------------------------
+BOND VALENCE (settings row "Bond valence")
+  Sum s >=            [0.06 vu]  bonds at least this strong are summed.
+  List s >=           [0.03 vu]  weaker bonds down to this are listed (not
+                                 summed); below it they are not shown.
+  Env. radius A       [6.0]      radius of the neighbour lists (Environment tab,
+                                 all searches). Must be >= D...A max.
+  Ignore non-H <A     [1.0]      shorter contacts to non-H atoms are not bonds.
+  Water if w/o H <    [0.70 vu]  upper limit of the water class.
+  OH if <             [1.40 vu]  upper limit of the hydroxyl class.
+  (Fixed in the code: water (BVS < min) below 0.10; probable acceptor below
+   1.85; possible acceptor below 1.95.)
+
+CANDIDATES
+  D...A min / max     [2.4 / 3.4 A]  donor-acceptor search shell.
+  Cone vertex deg     [70]       full vertex angle of the forbidden cone around
+                                 each D->cation direction (half-angle 35).
+  Pass if A-D-C > deg [60]       a candidate fails if any A-D-C is not above this.
+  A-D-C min occ.      [0.5]      cation positions occupied less than this do not
+                                 count in the A-D-C tests (see 5.2).
+  D-H (GRG) A         [0.918]    D-H at which GRG valences of hypothetical H are
+                                 evaluated (before the +- "GRG D-H" fit).
+  D-H (placement) A   [0.82]     D-H at which hypothetical H are placed (all
+                                 geometry tests, tables, CIF). Chosen by testing
+                                 0.78-0.92 A against 7 CIFs with located H
+                                 (0.78-0.82 recovered the located schemes best).
+  H-D-H deg           [108]      H-O-H angle of hypothetical water.
+
+ANGLE SCORING
+  A-D-C soft deg      [90]       below this: penalty "pen./deg" per degree ...
+  pen./deg            [1.0]
+  A-D-C hard deg      [80]       ... and below this additionally
+  pen./deg^2          [2.0]      x (degrees below)^2  (e.g. 70 deg: -10 - 200).
+  Acc. cone x         [1.5]      water acceptor cone: base diameter = this x the
+                                 water's H...H distance (see 5.5).
+
+A1-D-A2 (angle between the two acceptors of one donor; also for located H)
+  no pen. >= deg      [90]       no penalty at or above this ...
+  hard limit deg      [70]       ... quadratic down to "pen. at limit" here ...
+  no pen. <= deg      [145]      wide end: no penalty up to this ...
+  hard max deg        [160]      ... quadratic up to "pen. at limit" here ...
+  pen. at limit       [-100]
+  pen. beyond         [-1000]    ... and this (+ the same per 10 deg) beyond
+                                 either hard limit.
+
+BV SCORING
+  BV scale vu         [0.10]     deviation that costs 1 point ...
+  BV power            [4]        ... cost = (deviation / scale) ^ power.
+  Donor band +-       [0.15 vu]  F&I target band: water 0 +- band, OH 1 +- band.
+  Group band +-       [0.6 vu]   F&I band for NH4+, NH3 and H3O+ (see 5.2).
+  minor zone          [0.05 vu]  zone just outside the band with a small penalty
+  minor pen.          [1.0]      size of that penalty (reached at band + zone).
+  BV weight           [5]        multiplies the BV score in the total.
+  Start score         [1000]     added to every total (see 5.5).
+  Rank by             [F&I only] F&I only / GRG only / GRG + F&I (mean).
+
+H...H & GRG
+  H...H red <A        [1.95]     red flag below this; penalty "red pen." at this
+  red pen.            [-1000]    distance, growing by the same for each 0.1 A below
+                                 (also used per acceptor-cone violation).
+  H...H mod. <A       [2.1]      sliding scale starts here (0) ...
+  mod. pen.           [-100]     ... and reaches this at the red limit (quadratic).
+  GRG D-H +-A         [0.12]     how much each D-H may change (+-) in the GRG
+                                 calculation (0 = keep as is).
+  step A              [0.01]     step of that search.
+  GRG: located H at D-H (GRG)  [on]  evaluate located H in GRG at 0.918 A along
+                                 their D-H direction (see 5.4).
+  impossible <A       [1.75]     contacts (real distance) shorter than this
+                                 make an option / scheme impossible (hidden
+                                 unless shown).
+  H flex A            [0]        optional penalty allowance per hypothetical H in
+                                 an H...H contact (see 5.5); never changes flags.
+
+SEARCH / F&I
+  Options/donor       [30]       best options kept per donor (by geometry).
+  Exhaustive <=       [2,000,000] score every combination up to this number,
+                                 otherwise beam search + refinement.
+  Beam width          [5000]     partial schemes kept per step of the beam search.
+  Keep                [300]      schemes listed on the Schemes tab.
+  F&I d0, n, c        [2.17, 8.2, 0.06]  s(H...A) = (D...A / d0)^-n + c.
+
+LOCATED H (H atoms in the CIF)
+  H...A <=            [2.70 A]   an H-bond of a located H must be at most this,
+  D...A <=            [3.50 A]   with D...A at most this,
+  D-H...A >=          [120 deg]  and an angle at H of at least this.
+                                 The shortest qualifying H...A is used.
+  D-H <=              [1.30 A]   an H is attached to the nearest non-H atom
+                                 within this distance.
+  Donors / Acceptors (tab)  [N O / N O F Cl S]  element lists used only by the
+                                 Located H-bonds tab.
+
+DISORDER / LIMITS
+  Split <A            [2.2]      partly occupied sites closer than this, with
+                                 occupancies summing to <= 1, cannot coexist.
+  PART <A             [3.5]      range within which different disorder groups
+                                 of one assembly exclude each other.
+  H...cat. min A      [1.8]      hypothetical H closer than this to a cation:
+                                 impossible.
+  H...an. min A       [1.4]      ... closer than this to an anion other than its
+                                 parent: impossible.
+  Flip pen.           [-100]     penalty for a located H that must turn away from
+                                 a disordered acceptor, x the fraction of cells.
+  Dis. conflict pen.  [-10]      per H...H < 2.1 A between two disordered donors
+                                 whose occupancies sum to <= 1 (donor conflict,
+                                 not a geometry violation).
+
+REFINEMENT (on the Refinement tab)
+  Mode                [All inferred H]  see section 4.
+  N worst             [1]        donors refined in "Worst-fitting" mode.
+  Max rotation deg    [10]       largest rotation of a water / hydroxyl.
+  H-D-H +-deg         [2]        how far a water's H-D-H angle may open/close.
+  sigma_bv vu         [0.05]     weight of GRG BV deviations (smaller = stronger).
+  sigma_hh A          [0.05]     weight of H...H shortfall below the moderate limit.
+  Similar-strength wt [1.0]      reward for a water's two H-bonds having similar
+                                 strength (0 = off).
+  Auto-pick scheme    [off]      see 5.7.
+  Also refine D-H     [off]      let each inferred D-H length change (see 5.7).
+    +- range A        [0.06]     largest change of a D-H length (= 2 sigma).
+    Restraint weight  [1.0]      strength of the pull back to the start length
+                                 (larger = stiffer; 0 = free within the range).
+
+CODE-ONLY SETTINGS (hbond_core.py, class Settings)
+  water_min 0.10, probable_max 1.85, possible_max 1.95,
+  nh4_max 0.35, nh3_max 1.25, nh2_max 2.25 (N classes),
+  v_slope 1.538, v_intercept -2.692, v_vc_state 5 (Cooper et al. 2019).
+
+
+-------------------------------------------------------------------------------
+7. BOND-VALENCE PARAMETER FILE (bv_params.txt)
+-------------------------------------------------------------------------------
+  One row per parameter:  cation valence anion anion_valence R0 b ref ['note']
+  Taken from I. D. Brown's bvparm2020.cif (IUCr). Reference codes:
+    bs  Gagne & Hawthorne (2015)    b  Brese & O'Keeffe (1991)
+    a   Brown & Altermatt (1985)    bc Brown (2002), other H codes kept for reference
+    s   García-Rodríguez et al. (2000) - ammonium as a whole, cation symbol NH
+        (NH 1 O -2 2.226 0.37; NH 1 F -1 2.129 0.37; NH 1 Cl -1 2.619 0.37)
+    user  YOUR PREFERRED VALUES - always used first for that pair; the quoted
+          note is printed in the BV-table footnote.
+  Currently set:  V 4 O -2 1.790 0.319 user 'Zachariasen 1978'
+  To use another value, add a "user" row; do not edit the published rows.
+  Cation valence 9 = valid for any oxidation state.
+
+
+-------------------------------------------------------------------------------
+8. OUTPUT FILES
+-------------------------------------------------------------------------------
+  <name>_hypothetical.cif (then ...1, 2, ...)  copy of the original CIF with the
+      ticked hypothetical H added to the _atom_site loop (labels H<donor>a, b ...,
+      Uiso = 1.5 x parent Uiso, occupancy = parent occupancy / symmetry copies,
+      calc flag "calc"; H ordered on a special position are written once at
+      full occupancy, with a comment naming the symmetry-generated partner). Located H are kept, unless "Ignore located H" is on,
+      in which case the original H rows are removed. A comment line records
+      what was added. Positions are not refined against diffraction data.
+      _chemical_formula_sum and _chemical_formula_weight are replaced by the
+      model: the sites (occupancy x multiplicity / Z, Z from the CIF) plus
+      the H of the exported scheme; a comment line keeps the old formula and
+      records the oxidation states (occupancy-weighted averages for mixed
+      valence) and the charge per formula unit.
+  SHELXL .ins: the UNIT count of H is set to the H per cell of the scheme
+      (or added, with H, to SFAC / UNIT when the .res has no H).
+  Subschemes (Subschemes tab, or Export CIF of an opened subscheme): new P1 CIFs
+      of one ordered arrangement - the atoms present (occupancy 1; labels of
+      symmetry copies get _1, _2 ...), located H and the subscheme's H (calc),
+      with its formula, oxidation states and charge in the header.
+        one subscheme:  <name>_hypothetical_subscheme<n>.cif next to the CIF
+        several:        a new folder <name>_hypothetical_subschemes (then
+                        <name>_hypothetical1_subschemes, 2, ... - never mixed
+                        with an earlier export) containing
+                        <name>_hypothetical_subscheme1.cif, 2, ...
+      (n = the number in the Subschemes list; "_optimized_hypothetical" for an
+      optimized structure). Delete the folder to remove a batch at once.
+  BV table .txt / .csv   from the BV table tab.
+  Export CSV...          <file>_<block>_bv_sites, _bv_bonds, _hbond_candidates,
+                         _hbond_options, _hbond_schemes, _located_hbonds .csv
+
+
+-------------------------------------------------------------------------------
+9. TIPS, LIMITATIONS AND TROUBLESHOOTING
+-------------------------------------------------------------------------------
+  * Always read the H-per-cell line first. A mismatch with the formula usually
+    means a class is wrong (e.g. a strong acceptor classed as hydroxyl) -
+    right-click the class to fix it - or that _cell_formula_units_Z /
+    _chemical_formula_sum is missing or different from the refined content.
+  * If good-looking schemes rank low, look at the penalty columns: a single
+    A1-D-A2 < 90 deg costs 1000 (also for located water), and red H...H
+    contacts cost 1000 each. Adjust the limits if you consider such
+    geometry acceptable.
+  * "H in CIF (located)" is scored with the same rules. If some waters have no
+    located H, their sums are far from target (especially GRG); the comparison
+    entry lists which donors lack H.
+  * Every H points at one acceptor. Bifurcated or symmetric H (e.g. H on a
+    3-fold axis shared by three acceptors) are not modelled; such structures
+    give red flags that are a modelling limitation, not a real clash.
+  * Disorder is treated as an occupancy-weighted average structure: every
+    alternative position of a disordered donor gets its own H, weighted by its
+    occupancy, and clashes between alternatives are ignored. Separate local
+    schemes for each disorder variant (e.g. which neighbours donate to W9A
+    when it is present vs. to W9B) are not built yet; an H-bond to only one
+    of two split positions has no acceptor in the other fraction of cells.
+  * Results depend on the BV parameters (e.g. Zachariasen vs Gagne & Hawthorne
+    for V4+ changes V=O bond valences by ~0.2 vu and therefore which acceptors
+    look under-bonded).
+  * Large structures: if a run is slow, lower "Options/donor" or
+    "Exhaustive <=", or keep impossible configurations hidden.
+  * Windows SmartScreen may warn the first time HydroGEN.exe is opened
+    (unsigned program): "More info" -> "Run anyway".
+
+  References
+    Brese N.E. & O'Keeffe M. (1991) Acta Cryst. B47, 192-197.
+    Brown I.D. & Altermatt D. (1985) Acta Cryst. B41, 244-247.
+    Cooper et al. (2019) - vanadium valence from BVS in decavanadates.
+    Ferraris G. & Ivaldi G. (1988) Acta Cryst. B44, 341-344.
+    Gagne O.C. & Hawthorne F.C. (2015) Acta Cryst. B71, 561-578.
+    Zachariasen W.H. (1978) J. Less-Common Met. 62, 1-7.
+===============================================================================
