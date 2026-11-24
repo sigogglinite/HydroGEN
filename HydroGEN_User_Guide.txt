@@ -50,6 +50,18 @@ HydroGEN reads a crystal structure from a CIF and
 
   From source (Anaconda Python):   python hbond_gui.py
 
+  Updates ("Update" in the menu bar, next to Help)
+    Asks GitHub (github.com/sigogglinite/HydroGEN, latest release) whether a
+    newer version than the one in the window title exists. If so it shows the
+    release notes and, when you agree, downloads that release's HydroGEN.exe
+    next to yours (checked: complete, a Windows program), offers to save the
+    current analysis, closes, swaps the files and starts the new version.
+    The previous version is kept as HydroGEN_old.exe in the same folder (delete
+    it, or rename it back to HydroGEN.exe to return to it). Your own
+    bv_params.txt and analysis files are not touched. If the folder is not
+    writable (e.g. Program Files), copy HydroGEN.exe somewhere you can write.
+    Running from the Python source, "Update" opens the release page instead.
+
 
 -------------------------------------------------------------------------------
 3. QUICK START

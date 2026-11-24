@@ -29,8 +29,14 @@ import datetime
 import json
 import os
 import re
+import subprocess
+import sys
+import tempfile
 import threading
+import time
 import traceback
+import urllib.request
+import webbrowser
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -46,7 +52,9 @@ TAB_DISORDER, TAB_SCHEMES, TAB_REFINE, TAB_SUBS, TAB_DETAILS, TAB_TABLE, TAB_FIN
 SUB_SRC_SCHEME = "Schemes tab: selected scheme"
 SUB_SRC_FINAL = "Finalize: current selection"
 SUB_SRC_CMP = "Refinement: "
-APP_TITLE = "HydroGEN - A program for bond valence and H-bond analysis"
+APP_VERSION = "1.1"                       # must match the GitHub release tag (V1.1) of this build
+GITHUB_REPO = "sigogglinite/HydroGEN"     # Help > Update downloads the latest release's HydroGEN.exe from here
+APP_TITLE = "HydroGEN %s - A program for bond valence and H-bond analysis" % APP_VERSION
 DIS_MODES = {"donors": "donor", "acceptors only": "acceptor", "excluded": "exclude"}
 ROLE_TEXT = {"normal": "normal", "acceptor": "acceptor only", "exclude": "excluded from H-bond search"}
 APP_NAME = "HydroGEN"
@@ -62,6 +70,151 @@ import base64
 import io
 import pickle
 import zlib
+
+
+# ================================================================== updates (GitHub releases)
+def version_tuple(v):
+    """'V1.10' / 'v1.2.3' / '1.1' -> (1, 10) / (1, 2, 3) / (1, 1); trailing zeros dropped (1.0 == 1)."""
+    nums = [int(x) for x in re.findall(r"\d+", str(v))] or [0]
+    while len(nums) > 1 and nums[-1] == 0:
+        nums.pop()
+    return tuple(nums)
+
+
+def _gh_request(url):
+    return urllib.request.Request(url, headers={"User-Agent": "HydroGEN-updater",
+                                                "Accept": "application/vnd.github+json"})
+
+
+def _is_cert_error(e):
+    return "CERTIFICATE_VERIFY_FAILED" in str(e) or isinstance(getattr(e, "reason", None), __import__("ssl").SSLError)
+
+
+def _win_fetch_cmd(url, out):
+    """Command that downloads url to out with Windows' own HTTPS (its certificate store and automatic root
+    updates) - used when Python's bundled OpenSSL cannot verify the server: curl.exe, else PowerShell."""
+    curl = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "curl.exe")
+    if os.path.exists(curl):
+        return [curl, "-sSL", "--fail", "-A", "HydroGEN-updater", "-o", out, url]
+    ps = ("$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol='Tls12'; "
+          "Invoke-WebRequest -UseBasicParsing -UserAgent 'HydroGEN-updater' -Uri '%s' -OutFile '%s'" % (url, out))
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps]
+
+
+def _run_hidden(cmd, timeout=None):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                          creationflags=0x08000000 if os.name == "nt" else 0)
+
+
+def latest_release(repo=None, timeout=15):
+    """Latest published release of the GitHub repository: {'tag', 'page', 'notes', 'asset': {'url', 'size'} or
+    None} - the asset is the release's HydroGEN.exe (or its only .exe)."""
+    repo = repo or GITHUB_REPO
+    url = "https://api.github.com/repos/%s/releases/latest" % repo
+    try:
+        with urllib.request.urlopen(_gh_request(url), timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except Exception as e:  # noqa: BLE001
+        if os.name != "nt" or not _is_cert_error(e):
+            raise
+        out = os.path.join(tempfile.gettempdir(), "HydroGEN_release_%d.json" % os.getpid())
+        p = _run_hidden(_win_fetch_cmd(url, out), timeout=60)
+        if p.returncode != 0 or not os.path.exists(out):
+            raise RuntimeError("%s\n(Windows download also failed: %s)" % (e, (p.stderr or "").strip()[:300]))
+        with open(out, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        os.remove(out)
+    if "tag_name" not in d:
+        raise RuntimeError(d.get("message") or "no published release found")
+    exes = [a for a in d.get("assets", []) if a.get("name", "").lower().endswith(".exe")]
+    a = next((x for x in exes if x["name"].lower() == "hydrogen.exe"), exes[0] if len(exes) == 1 else None)
+    return {"tag": d.get("tag_name", "?"), "page": d.get("html_url", "https://github.com/%s/releases" % repo),
+            "notes": d.get("body") or "",
+            "asset": {"url": a["browser_download_url"], "size": int(a.get("size") or 0)} if a else None}
+
+
+def download_file(url, path, size, state):
+    """Download url to path (state['done'] = bytes so far; state['cancel'] stops it). The file must have the
+    release's size and be a Windows program ('MZ'), otherwise it is deleted and an error raised."""
+    tmp = path + ".part"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "HydroGEN-updater"}),
+                                    timeout=30) as r, open(tmp, "wb") as fh:
+            while True:
+                if state.get("cancel"):
+                    raise RuntimeError("cancelled")
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                state["done"] += len(chunk)
+    except Exception as e:  # noqa: BLE001
+        if os.name != "nt" or not _is_cert_error(e):
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
+        # Python cannot verify the certificate: let Windows download it (progress = size of the file so far)
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        proc = subprocess.Popen(_win_fetch_cmd(url, tmp), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                creationflags=0x08000000)
+        while proc.poll() is None:
+            if state.get("cancel"):
+                proc.kill()
+                proc.wait()
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+                raise RuntimeError("cancelled")
+            state["done"] = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+            time.sleep(0.1)
+        if proc.returncode != 0 or not os.path.exists(tmp):
+            err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()[:300]
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise RuntimeError("download failed: %s" % (err or "exit code %d" % proc.returncode))
+        state["done"] = os.path.getsize(tmp)
+    got = os.path.getsize(tmp)
+    with open(tmp, "rb") as fh:
+        head = fh.read(2)
+    if (size and got != size) or head != b"MZ":
+        os.remove(tmp)
+        raise RuntimeError("incomplete or invalid download (%d of %d bytes)" % (got, size))
+    os.replace(tmp, path)
+
+
+def start_swap_helper(exe, new):
+    """Start a hidden helper that waits until this program has exited (the .exe is unlocked), renames it to
+    HydroGEN_old.exe, puts `new` in its place and starts it. If the swap fails the old .exe is restored."""
+    d = os.path.dirname(exe)
+    old = os.path.join(d, os.path.splitext(os.path.basename(exe))[0] + "_old.exe")
+    bat = os.path.join(tempfile.gettempdir(), "HydroGEN_update_%d.cmd" % os.getpid())
+    lines = [
+        "@echo off",
+        "set n=0",
+        ":wait",
+        "if exist \"%s\" del /f /q \"%s\" >nul 2>&1" % (old, old),
+        "move /y \"%s\" \"%s\" >nul 2>&1 && goto swap" % (exe, old),
+        "set /a n+=1",
+        "if %n% geq 60 goto fail",
+        "timeout /t 1 /nobreak >nul",
+        "goto wait",
+        ":swap",
+        "move /y \"%s\" \"%s\" >nul 2>&1 || (move /y \"%s\" \"%s\" >nul 2>&1 & goto fail)" % (new, exe, old, exe),
+        "start \"\" \"%s\"" % exe,
+        "goto end",
+        ":fail",
+        "start \"\" \"%s\"" % exe,
+        ":end",
+        "(goto) 2>nul & del \"%~f0\"",
+    ]
+    with open(bat, "w", encoding="mbcs" if os.name == "nt" else "utf-8") as fh:
+        fh.write("\r\n".join(lines) + "\r\n")
+    env = dict(os.environ)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"      # the new .exe must unpack its own files, not reuse ours
+    for k in [k for k in env if k.startswith("_PYI") or k == "_MEIPASS2"]:
+        env.pop(k)
+    flags = 0x08000000 | 0x00000200                 # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen(["cmd.exe", "/c", bat], cwd=d, env=env, creationflags=flags, close_fds=True)
 
 STATE_VERSION = 1
 
@@ -647,11 +800,138 @@ class HBondApp:
             "H-atom inference and H-bond scheme scoring (Ferraris & Ivaldi; GRG), refinement and CIF / SHELXL "
             "export." % APP_TITLE))
         mb.add_cascade(label="Help", menu=hm)
+        mb.add_command(label="Update", command=self.check_for_update)
         self.root.config(menu=mb)
         self.root.bind_all("<F1>", lambda e: self.open_manual())
         self.root.bind_all("<Control-o>", lambda e: self.browse())
         self.root.bind_all("<Control-O>", lambda e: self.open_analysis())
         self.root.bind_all("<Control-s>", lambda e: self.save_analysis())
+
+    # ============================================================== updates
+    def check_for_update(self):
+        """Menu 'Update': ask GitHub for the latest release; if it is newer than APP_VERSION, download its
+        HydroGEN.exe next to this one and restart into it (the running .exe is swapped by a small helper
+        once this process has exited; the old one is kept as HydroGEN_old.exe)."""
+        if getattr(self, "_upd_busy", False):
+            return
+        self._upd_busy = True
+        self.status_var.set("Checking GitHub for a newer version...")
+        box = {}
+
+        def work():
+            try:
+                box["rel"] = latest_release()
+            except Exception as e:  # noqa: BLE001
+                box["err"] = str(e)
+
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+
+        def poll():
+            if th.is_alive():
+                self.root.after(150, poll)
+                return
+            self._upd_busy = False
+            if "err" in box:
+                self.status_var.set("Update check failed.")
+                messagebox.showerror(APP_NAME, "Could not reach GitHub to check for updates:\n%s" % box["err"])
+                return
+            self._offer_update(box["rel"])
+
+        self.root.after(150, poll)
+
+    def _offer_update(self, rel):
+        tag, url = rel["tag"], rel["page"]
+        if version_tuple(tag) <= version_tuple(APP_VERSION):
+            self.status_var.set("HydroGEN %s is the latest version." % APP_VERSION)
+            messagebox.showinfo(APP_NAME, "You have the latest version (%s).\nLatest release on GitHub: %s"
+                                % (APP_VERSION, tag))
+            return
+        notes = (rel.get("notes") or "").strip()
+        if len(notes) > 1200:
+            notes = notes[:1200] + " ..."
+        frozen = bool(getattr(sys, "frozen", False)) and sys.executable.lower().endswith(".exe")
+        if not frozen or rel.get("asset") is None:
+            why = ("You are running HydroGEN from the Python source - download the new files there."
+                   if not frozen else "The release has no HydroGEN.exe attached.")
+            if messagebox.askyesno(APP_NAME, "HydroGEN %s is available (you have %s).\n\n%s\n\n%s\n\nOpen the release "
+                                   "page in your browser?" % (tag, APP_VERSION, notes or "(no release notes)", why)):
+                webbrowser.open(url)
+            return
+        if not messagebox.askyesno(APP_NAME, "HydroGEN %s is available (you have %s).\n\n%s\n\nDownload it (%.1f MB) "
+                                   "and restart into the new version?" % (
+                                       tag, APP_VERSION, notes or "(no release notes)",
+                                       rel["asset"]["size"] / 1048576.0)):
+            return
+        exe = os.path.abspath(sys.executable)
+        new = os.path.join(os.path.dirname(exe), "HydroGEN_new.exe")
+        self._download_update(rel, new, exe)
+
+    def _download_update(self, rel, new, exe):
+        win = tk.Toplevel(self.root)
+        win.title("Updating %s" % APP_NAME)
+        win.transient(self.root)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+        msg = tk.StringVar(value="Downloading HydroGEN %s..." % rel["tag"])
+        ttk.Label(frm, textvariable=msg, width=60).pack(anchor="w")
+        bar = ttk.Progressbar(frm, length=380, maximum=max(1, rel["asset"]["size"]))
+        bar.pack(fill="x", pady=(8, 8))
+        state = {"done": 0, "cancel": False}
+        cancel = ttk.Button(frm, text="Cancel", command=lambda: state.update(cancel=True))
+        cancel.pack(anchor="e")
+        win.protocol("WM_DELETE_WINDOW", lambda: state.update(cancel=True))
+        win.grab_set()
+
+        def work():
+            try:
+                download_file(rel["asset"]["url"], new, rel["asset"]["size"], state)
+            except Exception as e:  # noqa: BLE001
+                state["err"] = str(e)
+                try:
+                    os.remove(new)
+                except OSError:
+                    pass
+
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+
+        def poll():
+            if th.is_alive():
+                bar["value"] = state["done"]
+                msg.set("Downloading HydroGEN %s...  %.1f / %.1f MB" % (
+                    rel["tag"], state["done"] / 1048576.0, rel["asset"]["size"] / 1048576.0))
+                self.root.after(100, poll)
+                return
+            win.grab_release()
+            win.destroy()
+            if "err" in state:
+                self.status_var.set("Update not installed.")
+                if not state["cancel"]:
+                    messagebox.showerror(APP_NAME, "The download failed - nothing was changed:\n%s" % state["err"])
+                return
+            self._install_update(rel, new, exe)
+
+        self.root.after(100, poll)
+
+    def _install_update(self, rel, new, exe):
+        if self.st is not None:
+            ans = messagebox.askyesnocancel(APP_NAME, "HydroGEN %s is downloaded. HydroGEN will now close and "
+                                                      "restart.\n\nSave the current analysis first?" % rel["tag"])
+            if ans is None:
+                os.remove(new)
+                self.status_var.set("Update cancelled - nothing was changed.")
+                return
+            if ans:
+                self.save_analysis()
+        try:
+            start_swap_helper(exe, new)
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror(APP_NAME, "Could not start the updater - nothing was changed:\n%s\n\nThe new "
+                                           "version is saved as %s." % (e, new))
+            return
+        self.root.destroy()
 
     def open_manual(self):
         path = _resource("HydroGEN_User_Guide.txt")
