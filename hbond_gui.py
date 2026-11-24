@@ -29,11 +29,8 @@ import datetime
 import json
 import os
 import re
-import subprocess
 import sys
-import tempfile
 import threading
-import time
 import traceback
 import urllib.request
 import webbrowser
@@ -52,7 +49,7 @@ TAB_DISORDER, TAB_SCHEMES, TAB_REFINE, TAB_SUBS, TAB_DETAILS, TAB_TABLE, TAB_FIN
 SUB_SRC_SCHEME = "Schemes tab: selected scheme"
 SUB_SRC_FINAL = "Finalize: current selection"
 SUB_SRC_CMP = "Refinement: "
-APP_VERSION = "1.1"                       # must match the GitHub release tag (V1.1) of this build
+APP_VERSION = "1.2"                       # must match the GitHub release tag (V1.2) of this build
 GITHUB_REPO = "sigogglinite/HydroGEN"     # Help > Update downloads the latest release's HydroGEN.exe from here
 APP_TITLE = "HydroGEN %s - A program for bond valence and H-bond analysis" % APP_VERSION
 DIS_MODES = {"donors": "donor", "acceptors only": "acceptor", "excluded": "exclude"}
@@ -86,24 +83,19 @@ def _gh_request(url):
                                                 "Accept": "application/vnd.github+json"})
 
 
-def _is_cert_error(e):
-    return "CERTIFICATE_VERIFY_FAILED" in str(e) or isinstance(getattr(e, "reason", None), __import__("ssl").SSLError)
+def _ssl_context():
+    """HTTPS certificates: the certifi bundle shipped with HydroGEN (Python's own OpenSSL cannot always verify
+    GitHub from the Windows store alone), else the system default."""
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001
+        return ssl.create_default_context()
 
 
-def _win_fetch_cmd(url, out):
-    """Command that downloads url to out with Windows' own HTTPS (its certificate store and automatic root
-    updates) - used when Python's bundled OpenSSL cannot verify the server: curl.exe, else PowerShell."""
-    curl = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "curl.exe")
-    if os.path.exists(curl):
-        return [curl, "-sSL", "--fail", "-A", "HydroGEN-updater", "-o", out, url]
-    ps = ("$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol='Tls12'; "
-          "Invoke-WebRequest -UseBasicParsing -UserAgent 'HydroGEN-updater' -Uri '%s' -OutFile '%s'" % (url, out))
-    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps]
-
-
-def _run_hidden(cmd, timeout=None):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                          creationflags=0x08000000 if os.name == "nt" else 0)
+def _urlopen(req, timeout):
+    return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
 
 
 def latest_release(repo=None, timeout=15):
@@ -111,19 +103,8 @@ def latest_release(repo=None, timeout=15):
     None} - the asset is the release's HydroGEN.exe (or its only .exe)."""
     repo = repo or GITHUB_REPO
     url = "https://api.github.com/repos/%s/releases/latest" % repo
-    try:
-        with urllib.request.urlopen(_gh_request(url), timeout=timeout) as r:
-            d = json.loads(r.read().decode("utf-8"))
-    except Exception as e:  # noqa: BLE001
-        if os.name != "nt" or not _is_cert_error(e):
-            raise
-        out = os.path.join(tempfile.gettempdir(), "HydroGEN_release_%d.json" % os.getpid())
-        p = _run_hidden(_win_fetch_cmd(url, out), timeout=60)
-        if p.returncode != 0 or not os.path.exists(out):
-            raise RuntimeError("%s\n(Windows download also failed: %s)" % (e, (p.stderr or "").strip()[:300]))
-        with open(out, "r", encoding="utf-8") as fh:
-            d = json.load(fh)
-        os.remove(out)
+    with _urlopen(_gh_request(url), timeout) as r:
+        d = json.loads(r.read().decode("utf-8"))
     if "tag_name" not in d:
         raise RuntimeError(d.get("message") or "no published release found")
     exes = [a for a in d.get("assets", []) if a.get("name", "").lower().endswith(".exe")]
@@ -138,8 +119,8 @@ def download_file(url, path, size, state):
     release's size and be a Windows program ('MZ'), otherwise it is deleted and an error raised."""
     tmp = path + ".part"
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "HydroGEN-updater"}),
-                                    timeout=30) as r, open(tmp, "wb") as fh:
+        with _urlopen(urllib.request.Request(url, headers={"User-Agent": "HydroGEN-updater"}), 30) as r, \
+                open(tmp, "wb") as fh:
             while True:
                 if state.get("cancel"):
                     raise RuntimeError("cancelled")
@@ -148,31 +129,10 @@ def download_file(url, path, size, state):
                     break
                 fh.write(chunk)
                 state["done"] += len(chunk)
-    except Exception as e:  # noqa: BLE001
-        if os.name != "nt" or not _is_cert_error(e):
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            raise
-        # Python cannot verify the certificate: let Windows download it (progress = size of the file so far)
+    except BaseException:
         if os.path.exists(tmp):
             os.remove(tmp)
-        proc = subprocess.Popen(_win_fetch_cmd(url, tmp), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                creationflags=0x08000000)
-        while proc.poll() is None:
-            if state.get("cancel"):
-                proc.kill()
-                proc.wait()
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-                raise RuntimeError("cancelled")
-            state["done"] = os.path.getsize(tmp) if os.path.exists(tmp) else 0
-            time.sleep(0.1)
-        if proc.returncode != 0 or not os.path.exists(tmp):
-            err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()[:300]
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            raise RuntimeError("download failed: %s" % (err or "exit code %d" % proc.returncode))
-        state["done"] = os.path.getsize(tmp)
+        raise
     got = os.path.getsize(tmp)
     with open(tmp, "rb") as fh:
         head = fh.read(2)
@@ -182,39 +142,21 @@ def download_file(url, path, size, state):
     os.replace(tmp, path)
 
 
-def start_swap_helper(exe, new):
-    """Start a hidden helper that waits until this program has exited (the .exe is unlocked), renames it to
-    HydroGEN_old.exe, puts `new` in its place and starts it. If the swap fails the old .exe is restored."""
-    d = os.path.dirname(exe)
-    old = os.path.join(d, os.path.splitext(os.path.basename(exe))[0] + "_old.exe")
-    bat = os.path.join(tempfile.gettempdir(), "HydroGEN_update_%d.cmd" % os.getpid())
-    lines = [
-        "@echo off",
-        "set n=0",
-        ":wait",
-        "if exist \"%s\" del /f /q \"%s\" >nul 2>&1" % (old, old),
-        "move /y \"%s\" \"%s\" >nul 2>&1 && goto swap" % (exe, old),
-        "set /a n+=1",
-        "if %n% geq 60 goto fail",
-        "timeout /t 1 /nobreak >nul",
-        "goto wait",
-        ":swap",
-        "move /y \"%s\" \"%s\" >nul 2>&1 || (move /y \"%s\" \"%s\" >nul 2>&1 & goto fail)" % (new, exe, old, exe),
-        "start \"\" \"%s\"" % exe,
-        "goto end",
-        ":fail",
-        "start \"\" \"%s\"" % exe,
-        ":end",
-        "(goto) 2>nul & del \"%~f0\"",
-    ]
-    with open(bat, "w", encoding="mbcs" if os.name == "nt" else "utf-8") as fh:
-        fh.write("\r\n".join(lines) + "\r\n")
-    env = dict(os.environ)
-    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"      # the new .exe must unpack its own files, not reuse ours
-    for k in [k for k in env if k.startswith("_PYI") or k == "_MEIPASS2"]:
-        env.pop(k)
-    flags = 0x08000000 | 0x00000200                 # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(["cmd.exe", "/c", bat], cwd=d, env=env, creationflags=flags, close_fds=True)
+def swap_in_update(exe, new):
+    """Put the downloaded `new` .exe in place of `exe`. Windows lets a running program's file be renamed (not
+    deleted), so this works while HydroGEN is open: exe -> HydroGEN_old.exe (replacing an older backup), then
+    new -> exe. The new version starts the next time HydroGEN is opened. Returns the backup's path; on failure
+    the original .exe is put back and the error raised."""
+    old = os.path.join(os.path.dirname(exe), os.path.splitext(os.path.basename(exe))[0] + "_old.exe")
+    if os.path.exists(old):
+        os.remove(old)
+    os.rename(exe, old)
+    try:
+        os.rename(new, exe)
+    except BaseException:
+        os.rename(old, exe)
+        raise
+    return old
 
 STATE_VERSION = 1
 
@@ -810,8 +752,8 @@ class HBondApp:
     # ============================================================== updates
     def check_for_update(self):
         """Menu 'Update': ask GitHub for the latest release; if it is newer than APP_VERSION, download its
-        HydroGEN.exe next to this one and restart into it (the running .exe is swapped by a small helper
-        once this process has exited; the old one is kept as HydroGEN_old.exe)."""
+        HydroGEN.exe next to this one and rename it into place (the old one is kept as HydroGEN_old.exe);
+        the user then reopens HydroGEN to start the new version."""
         if getattr(self, "_upd_busy", False):
             return
         self._upd_busy = True
@@ -859,7 +801,7 @@ class HBondApp:
                 webbrowser.open(url)
             return
         if not messagebox.askyesno(APP_NAME, "HydroGEN %s is available (you have %s).\n\n%s\n\nDownload it (%.1f MB) "
-                                   "and restart into the new version?" % (
+                                   "and install it? (It takes effect the next time you open HydroGEN.)" % (
                                        tag, APP_VERSION, notes or "(no release notes)",
                                        rel["asset"]["size"] / 1048576.0)):
             return
@@ -916,22 +858,18 @@ class HBondApp:
         self.root.after(100, poll)
 
     def _install_update(self, rel, new, exe):
-        if self.st is not None:
-            ans = messagebox.askyesnocancel(APP_NAME, "HydroGEN %s is downloaded. HydroGEN will now close and "
-                                                      "restart.\n\nSave the current analysis first?" % rel["tag"])
-            if ans is None:
-                os.remove(new)
-                self.status_var.set("Update cancelled - nothing was changed.")
-                return
-            if ans:
-                self.save_analysis()
         try:
-            start_swap_helper(exe, new)
+            old = swap_in_update(exe, new)
         except Exception as e:  # noqa: BLE001
-            messagebox.showerror(APP_NAME, "Could not start the updater - nothing was changed:\n%s\n\nThe new "
-                                           "version is saved as %s." % (e, new))
+            self.status_var.set("Update not installed.")
+            messagebox.showerror(APP_NAME, "Could not replace %s - nothing was changed:\n%s\n\nThe new version is "
+                                           "saved as %s; close HydroGEN and rename it to %s to use it."
+                                 % (os.path.basename(exe), e, new, os.path.basename(exe)))
             return
-        self.root.destroy()
+        self.status_var.set("HydroGEN %s installed - close and reopen HydroGEN to use it." % rel["tag"])
+        messagebox.showinfo(APP_NAME, "HydroGEN %s is installed.\n\nClose HydroGEN and open it again to start the new "
+                                      "version. Until then you keep working in version %s.\n\nThe previous version "
+                                      "is kept as %s." % (rel["tag"], APP_VERSION, os.path.basename(old)))
 
     def open_manual(self):
         path = _resource("HydroGEN_User_Guide.txt")
