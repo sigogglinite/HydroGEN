@@ -49,8 +49,9 @@ TAB_DISORDER, TAB_SCHEMES, TAB_REFINE, TAB_SUBS, TAB_DETAILS, TAB_TABLE, TAB_FIN
 SUB_SRC_SCHEME = "Schemes tab: selected scheme"
 SUB_SRC_FINAL = "Finalize: current selection"
 SUB_SRC_CMP = "Refinement: "
-APP_VERSION = "1.2"                       # must match the GitHub release tag (V1.2) of this build
-GITHUB_REPO = "sigogglinite/HydroGEN"     # Help > Update downloads the latest release's HydroGEN.exe from here
+APP_VERSION = "1.3"                       # must match the GitHub release tag (V1.3) of this build
+GITHUB_REPO = "sigogglinite/HydroGEN"     # Update downloads the latest release's HydroGEN.zip from here
+UPDATE_ZIP = "HydroGEN.zip"               # release asset: the zipped program folder made by build_exe.ps1
 APP_TITLE = "HydroGEN %s - A program for bond valence and H-bond analysis" % APP_VERSION
 DIS_MODES = {"donors": "donor", "acceptors only": "acceptor", "excluded": "exclude"}
 ROLE_TEXT = {"normal": "normal", "acceptor": "acceptor only", "exclude": "excluded from H-bond search"}
@@ -100,15 +101,14 @@ def _urlopen(req, timeout):
 
 def latest_release(repo=None, timeout=15):
     """Latest published release of the GitHub repository: {'tag', 'page', 'notes', 'asset': {'url', 'size'} or
-    None} - the asset is the release's HydroGEN.exe (or its only .exe)."""
+    None} - the asset is the release's HydroGEN.zip (the zipped program folder made by build_exe.ps1)."""
     repo = repo or GITHUB_REPO
     url = "https://api.github.com/repos/%s/releases/latest" % repo
     with _urlopen(_gh_request(url), timeout) as r:
         d = json.loads(r.read().decode("utf-8"))
     if "tag_name" not in d:
         raise RuntimeError(d.get("message") or "no published release found")
-    exes = [a for a in d.get("assets", []) if a.get("name", "").lower().endswith(".exe")]
-    a = next((x for x in exes if x["name"].lower() == "hydrogen.exe"), exes[0] if len(exes) == 1 else None)
+    a = next((x for x in d.get("assets", []) if x.get("name", "").lower() == UPDATE_ZIP.lower()), None)
     return {"tag": d.get("tag_name", "?"), "page": d.get("html_url", "https://github.com/%s/releases" % repo),
             "notes": d.get("body") or "",
             "asset": {"url": a["browser_download_url"], "size": int(a.get("size") or 0)} if a else None}
@@ -116,7 +116,7 @@ def latest_release(repo=None, timeout=15):
 
 def download_file(url, path, size, state):
     """Download url to path (state['done'] = bytes so far; state['cancel'] stops it). The file must have the
-    release's size and be a Windows program ('MZ'), otherwise it is deleted and an error raised."""
+    release's size, otherwise it is deleted and an error raised."""
     tmp = path + ".part"
     try:
         with _urlopen(urllib.request.Request(url, headers={"User-Agent": "HydroGEN-updater"}), 30) as r, \
@@ -134,28 +134,94 @@ def download_file(url, path, size, state):
             os.remove(tmp)
         raise
     got = os.path.getsize(tmp)
-    with open(tmp, "rb") as fh:
-        head = fh.read(2)
-    if (size and got != size) or head != b"MZ":
+    if size and got != size:
         os.remove(tmp)
-        raise RuntimeError("incomplete or invalid download (%d of %d bytes)" % (got, size))
+        raise RuntimeError("incomplete download (%d of %d bytes)" % (got, size))
     os.replace(tmp, path)
 
 
-def swap_in_update(exe, new):
-    """Put the downloaded `new` .exe in place of `exe`. Windows lets a running program's file be renamed (not
-    deleted), so this works while HydroGEN is open: exe -> HydroGEN_old.exe (replacing an older backup), then
-    new -> exe. The new version starts the next time HydroGEN is opened. Returns the backup's path; on failure
-    the original .exe is put back and the error raised."""
-    old = os.path.join(os.path.dirname(exe), os.path.splitext(os.path.basename(exe))[0] + "_old.exe")
-    if os.path.exists(old):
-        os.remove(old)
-    os.rename(exe, old)
+def app_folder():
+    """Folder of the installed (folder-build) program - the one holding HydroGEN.exe and _internal - or None
+    when running from the Python source or from an old single-file build."""
+    if not getattr(sys, "frozen", False):
+        return None
+    d = os.path.dirname(os.path.abspath(sys.executable))
+    return d if os.path.isdir(os.path.join(d, "_internal")) else None
+
+
+def _zip_program_root(z):
+    """Folder inside the update zip that holds HydroGEN.exe and _internal/ ('' or e.g. 'HydroGEN/')."""
+    names = z.namelist()
+    for n in names:
+        parts = n.split("/")
+        if parts[-1].lower() == "hydrogen.exe" and len(parts) <= 2:
+            root = n[:len(n) - len(parts[-1])]
+            if any(m.startswith(root + "_internal/") for m in names):
+                return root
+    raise RuntimeError("the downloaded zip does not contain HydroGEN.exe and its _internal folder")
+
+
+def install_update_zip(zpath, app_dir):
+    """Replace the program in app_dir (HydroGEN.exe + _internal) with the one in the update zip. The current
+    program files are moved into app_dir/HydroGEN_old (an older backup there is deleted first), then the new
+    files moved in. Windows allows renaming files of a running program (not deleting them), so this works while
+    HydroGEN is open - but the running HydroGEN keeps reading its code from HydroGEN.exe, so it must be closed
+    right afterwards. Anything else in app_dir (your own files) is left alone. If a step fails, every file is
+    moved back and the error raised. Returns the backup folder."""
+    import shutil
+    import zipfile
+    stage, old = os.path.join(app_dir, "HydroGEN_update"), os.path.join(app_dir, "HydroGEN_old")
+    for d in (stage, old):
+        if os.path.exists(d):
+            shutil.rmtree(d)
+    with zipfile.ZipFile(zpath) as z:
+        root = _zip_program_root(z)
+        bad = z.testzip()
+        if bad:
+            raise RuntimeError("the downloaded zip is damaged (%s)" % bad)
+        z.extractall(stage)
+    src = os.path.join(stage, *root.split("/"))
+
+    def files(base, tops):
+        out = []
+        for t in tops:
+            p = os.path.join(base, t)
+            if os.path.isfile(p):
+                out.append(t)
+            elif os.path.isdir(p):
+                for dp, _dn, fn in os.walk(p):
+                    out += [os.path.relpath(os.path.join(dp, f), base) for f in fn]
+        return out
+
+    tops = sorted(set(os.listdir(src)) | {"HydroGEN.exe", "_internal"})
+    moves = []
+
+    def mv(a, b):
+        os.makedirs(os.path.dirname(b), exist_ok=True)
+        os.rename(a, b)
+        moves.append((a, b))
+
     try:
-        os.rename(new, exe)
+        for rel in files(app_dir, tops):
+            mv(os.path.join(app_dir, rel), os.path.join(old, rel))
+        for rel in files(src, tops):
+            mv(os.path.join(src, rel), os.path.join(app_dir, rel))
     except BaseException:
-        os.rename(old, exe)
+        for a, b in reversed(moves):
+            try:
+                os.makedirs(os.path.dirname(a), exist_ok=True)
+                os.rename(b, a)
+            except OSError:
+                pass
+        shutil.rmtree(stage, ignore_errors=True)
+        shutil.rmtree(old, ignore_errors=True)
         raise
+    shutil.rmtree(stage, ignore_errors=True)
+    for dp, _dn, _fn in sorted(os.walk(os.path.join(app_dir, "_internal")), key=lambda w: -len(w[0])):
+        try:
+            os.rmdir(dp)                     # leftover empty folders of the old version (non-empty ones stay)
+        except OSError:
+            pass
     return old
 
 STATE_VERSION = 1
@@ -752,8 +818,8 @@ class HBondApp:
     # ============================================================== updates
     def check_for_update(self):
         """Menu 'Update': ask GitHub for the latest release; if it is newer than APP_VERSION, download its
-        HydroGEN.exe next to this one and rename it into place (the old one is kept as HydroGEN_old.exe);
-        the user then reopens HydroGEN to start the new version."""
+        HydroGEN.zip into the program folder, move the new files into place (the old ones are kept in
+        HydroGEN_old) and close; the user then reopens HydroGEN to start the new version."""
         if getattr(self, "_upd_busy", False):
             return
         self._upd_busy = True
@@ -792,24 +858,25 @@ class HBondApp:
         notes = (rel.get("notes") or "").strip()
         if len(notes) > 1200:
             notes = notes[:1200] + " ..."
-        frozen = bool(getattr(sys, "frozen", False)) and sys.executable.lower().endswith(".exe")
-        if not frozen or rel.get("asset") is None:
+        app_dir = app_folder()
+        if app_dir is None or rel.get("asset") is None:
             why = ("You are running HydroGEN from the Python source - download the new files there."
-                   if not frozen else "The release has no HydroGEN.exe attached.")
+                   if not getattr(sys, "frozen", False) else
+                   "This copy of HydroGEN cannot update itself - download the release's %s, unzip it and use "
+                   "the HydroGEN folder in it." % UPDATE_ZIP if app_dir is None else
+                   "The release has no %s attached." % UPDATE_ZIP)
             if messagebox.askyesno(APP_NAME, "HydroGEN %s is available (you have %s).\n\n%s\n\n%s\n\nOpen the release "
                                    "page in your browser?" % (tag, APP_VERSION, notes or "(no release notes)", why)):
                 webbrowser.open(url)
             return
         if not messagebox.askyesno(APP_NAME, "HydroGEN %s is available (you have %s).\n\n%s\n\nDownload it (%.1f MB) "
-                                   "and install it? (It takes effect the next time you open HydroGEN.)" % (
+                                   "and install it? HydroGEN closes once it is installed; you then open it again." % (
                                        tag, APP_VERSION, notes or "(no release notes)",
                                        rel["asset"]["size"] / 1048576.0)):
             return
-        exe = os.path.abspath(sys.executable)
-        new = os.path.join(os.path.dirname(exe), "HydroGEN_new.exe")
-        self._download_update(rel, new, exe)
+        self._download_update(rel, os.path.join(app_dir, "HydroGEN_update.zip"), app_dir)
 
-    def _download_update(self, rel, new, exe):
+    def _download_update(self, rel, new, app_dir):
         win = tk.Toplevel(self.root)
         win.title("Updating %s" % APP_NAME)
         win.transient(self.root)
@@ -853,23 +920,71 @@ class HBondApp:
                 if not state["cancel"]:
                     messagebox.showerror(APP_NAME, "The download failed - nothing was changed:\n%s" % state["err"])
                 return
-            self._install_update(rel, new, exe)
+            self._install_update(rel, new, app_dir)
 
         self.root.after(100, poll)
 
-    def _install_update(self, rel, new, exe):
-        try:
-            old = swap_in_update(exe, new)
-        except Exception as e:  # noqa: BLE001
-            self.status_var.set("Update not installed.")
-            messagebox.showerror(APP_NAME, "Could not replace %s - nothing was changed:\n%s\n\nThe new version is "
-                                           "saved as %s; close HydroGEN and rename it to %s to use it."
-                                 % (os.path.basename(exe), e, new, os.path.basename(exe)))
-            return
-        self.status_var.set("HydroGEN %s installed - close and reopen HydroGEN to use it." % rel["tag"])
-        messagebox.showinfo(APP_NAME, "HydroGEN %s is installed.\n\nClose HydroGEN and open it again to start the new "
-                                      "version. Until then you keep working in version %s.\n\nThe previous version "
-                                      "is kept as %s." % (rel["tag"], APP_VERSION, os.path.basename(old)))
+    def _install_update(self, rel, zpath, app_dir):
+        """Save first (optional), move the new program files into place, then close: the running HydroGEN reads
+        its code from HydroGEN.exe, so it cannot keep running once that file is the new version's."""
+        def drop_zip():
+            try:
+                os.remove(zpath)
+            except OSError:
+                pass
+        if self.st is not None:
+            ans = messagebox.askyesnocancel(APP_NAME, "HydroGEN %s is downloaded. HydroGEN closes after installing "
+                                                      "it.\n\nSave the current analysis first?" % rel["tag"])
+            if ans is None:
+                drop_zip()
+                self.status_var.set("Update cancelled - nothing was changed.")
+                return
+            if ans:
+                self.save_analysis()
+        self.status_var.set("Installing HydroGEN %s..." % rel["tag"])
+        win = tk.Toplevel(self.root)
+        win.title("Updating %s" % APP_NAME)
+        win.transient(self.root)
+        win.resizable(False, False)
+        win.protocol("WM_DELETE_WINDOW", lambda: None)          # cannot be interrupted half-way
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Installing HydroGEN %s - this takes a few seconds..." % rel["tag"], width=60).pack(anchor="w")
+        bar = ttk.Progressbar(frm, length=380, mode="indeterminate")
+        bar.pack(fill="x", pady=(8, 0))
+        bar.start(15)
+        win.grab_set()
+        box = {}
+
+        def work():
+            try:
+                box["old"] = install_update_zip(zpath, app_dir)
+            except Exception as e:  # noqa: BLE001
+                box["err"] = str(e)
+
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+
+        def poll():
+            if th.is_alive():
+                self.root.after(150, poll)
+                return
+            bar.stop()
+            win.grab_release()
+            win.destroy()
+            drop_zip()
+            if "err" in box:
+                self.status_var.set("Update not installed.")
+                messagebox.showerror(APP_NAME, "The update could not be installed - nothing was changed:\n%s\n\n(Is "
+                                               "another HydroGEN window open from this folder, or is the folder "
+                                               "read-only?)" % box["err"])
+                return
+            messagebox.showinfo(APP_NAME, "HydroGEN %s is installed. HydroGEN will now close - open it again to start "
+                                          "the new version.\n\nThe previous version is kept in the folder %s (you "
+                                          "can delete it)." % (rel["tag"], os.path.basename(box["old"])))
+            self.root.destroy()
+
+        self.root.after(150, poll)
 
     def open_manual(self):
         path = _resource("HydroGEN_User_Guide.txt")

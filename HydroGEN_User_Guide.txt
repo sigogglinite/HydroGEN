@@ -37,14 +37,30 @@ HydroGEN reads a crystal structure from a CIF and
 -------------------------------------------------------------------------------
 2. FILES AND STARTING THE PROGRAM
 -------------------------------------------------------------------------------
-  HydroGEN.exe          the program (double-click). No Python needed.
-  bv_params.txt         bond-valence parameters. A copy is built into the
-                        .exe; if a bv_params.txt sits in the same folder as
-                        the .exe, that file is used instead (so you can edit it).
+  Installing: download HydroGEN.zip from the GitHub release page
+  (github.com/sigogglinite/HydroGEN/releases), right-click it -> Extract All,
+  and put the HydroGEN folder somewhere you can write to (e.g. Documents or the
+  Desktop - not Program Files). No Python needed.
+
+  HydroGEN\                the program folder - keep its contents together:
+    HydroGEN.exe           the program (double-click it; for a desktop
+                           shortcut right-click it -> Show more options ->
+                           Send to -> Desktop). It does not run on its own if
+                           moved out of the folder - move the whole folder.
+    _internal\             Python, numpy and the built-in bv_params.txt and
+                           user guide. Do not change anything in here.
+  bv_params.txt            bond-valence parameters. A copy is built in; if a
+                           bv_params.txt sits next to HydroGEN.exe (in the
+                           HydroGEN folder), that file is used instead (so you
+                           can edit it).
+
+  Source files (GitHub repository / development folder):
   hbond_gui.py          window (source code)
   hbond_core.py         calculations (source code)
-  build_exe.ps1         rebuilds HydroGEN.exe after the code is changed:
+  build_exe.ps1         rebuilds the program after the code is changed:
                           powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+                        -> dist\HydroGEN\ (the program folder) and HydroGEN.zip
+                        (that folder zipped, to attach to a GitHub release)
   HydroGEN.ico / .png   program icon (window and .exe); drawn by make_icon.py
   build-env\, build\    build tools / temporary build files (not needed to run)
 
@@ -53,15 +69,20 @@ HydroGEN reads a crystal structure from a CIF and
   Updates ("Update" in the menu bar, next to Help)
     Asks GitHub (github.com/sigogglinite/HydroGEN, latest release) whether a
     newer version than the one in the window title exists. If so it shows the
-    release notes and, when you agree, downloads that release's HydroGEN.exe
-    next to yours (checked: complete, a Windows program) and puts it in place
-    of your HydroGEN.exe. HydroGEN stays open - you keep working in the old
-    version until you close HydroGEN and open it again, which starts the new
-    one. The previous version is kept as HydroGEN_old.exe in the same folder (delete
-    it, or rename it back to HydroGEN.exe to return to it). Your own
-    bv_params.txt and analysis files are not touched. If the folder is not
-    writable (e.g. Program Files), copy HydroGEN.exe somewhere you can write.
-    Running from the Python source, "Update" opens the release page instead.
+    release notes and, when you agree, downloads that release's HydroGEN.zip
+    into the HydroGEN folder (checked: complete, contains the program), offers
+    to save the current analysis, and replaces HydroGEN.exe and _internal with
+    the new ones. HydroGEN then closes - open it again to start the new
+    version. The previous version is kept in the folder HydroGEN_old inside
+    the HydroGEN folder (delete it any time; the next update replaces it).
+    Anything else you keep in the HydroGEN folder (your own bv_params.txt,
+    analyses) is not touched. If anything fails, everything is put back and
+    nothing changes. Close other HydroGEN windows started from the same folder
+    first. Running from the Python source, "Update" opens the release page
+    instead.
+    Versions 1.0-1.2 were a single HydroGEN.exe file: those cannot update to
+    the folder version themselves - download HydroGEN.zip once by hand (their
+    Update button offers to open the release page).
 
 
 -------------------------------------------------------------------------------
@@ -1233,7 +1254,10 @@ CODE-ONLY SETTINGS (hbond_core.py, class Settings)
   * Large structures: if a run is slow, lower "Options/donor" or
     "Exhaustive <=", or keep impossible configurations hidden.
   * Windows SmartScreen may warn the first time HydroGEN.exe is opened
-    (unsigned program): "More info" -> "Run anyway".
+    (unsigned program): "More info" -> "Run anyway". Antivirus programs
+    sometimes flag new unsigned programs built with PyInstaller (e.g. Windows
+    Defender "Sabsik ... !ml", a machine-learning guess); this is a known false
+    positive.
 
   References
     Brese N.E. & O'Keeffe M. (1991) Acta Cryst. B47, 192-197.
